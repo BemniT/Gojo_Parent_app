@@ -681,16 +681,16 @@ export default function ParentProfile() {
             <Text style={[styles.sectionTitle, { marginBottom: 8 }]}>Contact Developer</Text>
             <View style={{ gap: 10 }}>
               <TouchableOpacity style={styles.accountItem} onPress={() => Linking.openURL('https://t.me/gojo_edu')}>
-                <Image source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/8/82/Telegram_logo.svg' }} style={{ width: 22, height: 22, marginRight: 8 }} />
+                <Ionicons name="paper-plane" size={22} color="#2AABEE" style={{ marginRight: 8 }} />
                 <Text style={styles.accountText}>Telegram</Text>
                 <Ionicons name="chevron-forward-outline" size={20} color="#999" />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.accountItem} onPress={() => Linking.openURL('mailto:developer@email.com')}>
+              <TouchableOpacity style={styles.accountItem} onPress={() => Linking.openURL('mailto:gojo.education1@gmail.com')}>
                 <Ionicons name="mail" size={22} color="#EA4335" />
                 <Text style={styles.accountText}>Email</Text>
                 <Ionicons name="chevron-forward-outline" size={20} color="#999" />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.accountItem} onPress={() => Linking.openURL('https://www.linkedin.com/in/yourlinkedin/')}>
+              <TouchableOpacity style={styles.accountItem} onPress={() => Linking.openURL('https://t.me/gojo_edu')}>
                 <Ionicons name="logo-linkedin" size={22} color="#0077B5" />
                 <Text style={styles.accountText}>LinkedIn</Text>
                 <Ionicons name="chevron-forward-outline" size={20} color="#999" />

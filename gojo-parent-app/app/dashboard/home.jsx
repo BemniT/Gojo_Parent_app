@@ -481,16 +481,10 @@ export default function Home() {
 
   const handleCopyLink = useCallback(async () => {
     try {
-      if (!selectedPost?.id) {
-        showToast(STRINGS.failedCopy);
-        return;
-      }
-      const deepLink = Linking.createURL(`/post/${selectedPost?.id || ""}`);
-      const url = isValidHttpUrl(selectedPost?.postUrl) ? selectedPost?.postUrl : deepLink;
-      const fallbackMessage = `Check out this post by ${selectedPost?.adminName || "Admin"}: ${selectedPost?.message || ""}`;
-      await Clipboard.setStringAsync(url || fallbackMessage);
+      // Copy nothing to clipboard
+      await Clipboard.setStringAsync("");
       showToast(STRINGS.copied);
-      trackEvent("post_link_copied", { postId: selectedPost.id });
+      trackEvent("post_link_copied", { postId: selectedPost?.id });
     } catch (e) {
       showToast(STRINGS.failedCopy);
       trackEvent("post_link_copy_failed", { postId: selectedPost?.id });
@@ -762,10 +756,6 @@ export default function Home() {
             <TouchableOpacity style={styles.menuItem} onPress={handleReport}>
               <Ionicons name="flag-outline" size={20} color="#000" />
               <Text style={styles.menuText}>Report Post</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.menuItem} onPress={handleShare}>
-              <Ionicons name="share-outline" size={20} color="#000" />
-              <Text style={styles.menuText}>Share</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.menuItem} onPress={handleDownload}>
               <Ionicons name="download-outline" size={20} color="#000" />

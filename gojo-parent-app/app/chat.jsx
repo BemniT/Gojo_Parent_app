@@ -166,7 +166,7 @@ const MessageBubble = ({
                 <Ionicons
                   name={item.seen ? "checkmark-done" : "checkmark"}
                   size={14}
-                  color={item.seen ? "#2f9bff" : "#e6f2ff"}
+                  color={item.seen ? "#fff" : "#e6f2ff"}
                   style={{ marginLeft: 6 }}
                 />
               )}
@@ -359,6 +359,7 @@ export default function Chat() {
         const lastSnap = await get(lastRef);
         const last = lastSnap.exists() ? lastSnap.val() : null;
 
+        // Mark last message as seen if needed
         if (last && last.senderId === receiverUserId && !last.seen) {
           await update(lastRef, { seen: true });
           try {
@@ -367,6 +368,22 @@ export default function Chat() {
             mu[`UserChats/${receiverUserId}/${chatId}/lastMessage/seen`] = true;
             await update(ref(database), mu);
           } catch (e) {}
+        }
+
+        // Mark all messages from receiver as seen
+        const messagesRef = ref(database, `Chats/${chatId}/messages`);
+        const messagesSnap = await get(messagesRef);
+        if (messagesSnap.exists()) {
+          const updates = {};
+          const messagesData = messagesSnap.val();
+          Object.entries(messagesData).forEach(([msgId, msg]) => {
+            if (msg.senderId === receiverUserId && !msg.seen) {
+              updates[`Chats/${chatId}/messages/${msgId}/seen`] = true;
+            }
+          });
+          if (Object.keys(updates).length > 0) {
+            await update(ref(database), updates);
+          }
         }
 
         await update(ref(database, `Chats/${chatId}/unread`), { [parentUserId]: 0 });

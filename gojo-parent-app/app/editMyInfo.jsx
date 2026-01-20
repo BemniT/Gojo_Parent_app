@@ -201,8 +201,9 @@ export default function EditMyInfo() {
             <TextInput
               style={styles.input}
               value={userInfo.name}
-              onChangeText={(value) => updateField('name', value)}
               placeholder="Enter your full name"
+              editable={false}
+              selectTextOnFocus={false}
             />
           </View>
 
@@ -211,9 +212,10 @@ export default function EditMyInfo() {
             <TextInput
               style={styles.input}
               value={userInfo.phone}
-              onChangeText={(value) => updateField('phone', value)}
               placeholder="Enter your phone number"
               keyboardType="phone-pad"
+              editable={false}
+              selectTextOnFocus={false}
             />
           </View>
 
