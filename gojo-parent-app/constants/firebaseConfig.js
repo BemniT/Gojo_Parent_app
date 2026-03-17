@@ -6,15 +6,16 @@ import { getAuth } from "firebase/auth";
 
 // Your Firebase config here
 const firebaseConfig = {
-  apiKey: "AIzaSyAWqqYqPluS9UnaoPZOlpvwhRYYii3kM3w",
-  authDomain: "ethiostore-17d9f.firebaseapp.com",
-  databaseURL: "https://ethiostore-17d9f-default-rtdb.firebaseio.com",
-  projectId: "ethiostore-17d9f",
-  storageBucket: "ethiostore-17d9f.appspot.com",
-  messagingSenderId: "1041052914588",
-  appId: "1:1041052914588:web:7736dc3479c2dadc266e59",
-  measurementId: "G-STP74SEGDC"
+  apiKey: "AIzaSyD47Nw8JROSGpk_HrzOwpoAek_PH12pBS8",
+  authDomain: "bale-house-rental.firebaseapp.com",
+  databaseURL: "https://bale-house-rental-default-rtdb.firebaseio.com",
+  projectId: "bale-house-rental",
+  storageBucket: "bale-house-rental.appspot.com",
+  messagingSenderId: "964518277159",
+  appId: "1:964518277159:web:9ffde0de15dd9000961e02",
+  measurementId: "G-X8YCY4YJH6"
 };
+
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);

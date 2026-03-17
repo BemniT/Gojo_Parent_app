@@ -20,7 +20,7 @@ import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { ref, get } from "firebase/database";
+import { ref, query, orderByChild, equalTo, get } from "firebase/database";
 import { database } from "../constants/firebaseConfig";
 
 export const options = { headerShown: false };
@@ -42,32 +42,108 @@ export default function LoginScreen() {
 
   useEffect(() => {
     const checkSession = async () => {
-      const userId = await AsyncStorage.getItem("userId");
-      const role = await AsyncStorage.getItem("role");
-      const lastLogin = await AsyncStorage.getItem("lastLogin");
+      try {
+        const userId = await AsyncStorage.getItem("userId");
+        const role = await AsyncStorage.getItem("role");
+        const schoolKey = await AsyncStorage.getItem("schoolKey");
+        const lastLogin = await AsyncStorage.getItem("lastLogin");
 
-      if (userId && lastLogin) {
-        const now = Date.now();
-        const last = parseInt(lastLogin, 10);
-        const threeDays = 3 * 24 * 10;
+        if (userId && role === "parent" && schoolKey) {
+          // keep your original session-expiry idea, but fixed duration math
+          if (lastLogin) {
+            const now = Date.now();
+            const last = parseInt(lastLogin, 10);
+            const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
 
-        if (now - last < threeDays) {
-          router.replace("/dashboard/home");
-        } else {
-          await AsyncStorage.multiRemove(["userId", "parentId", "lastLogin", "role", "username"]);
+            if (!Number.isNaN(last) && now - last < threeDaysMs) {
+              router.replace("/dashboard/home");
+              return;
+            }
+          }
+
+          // if no lastLogin or expired, clear and continue login page
+          await AsyncStorage.multiRemove([
+            "userId",
+            "userNodeKey",
+            "username",
+            "role",
+            "parentId",
+            "schoolKey",
+            "lastLogin",
+          ]);
         }
-      } else if (userId && role) {
-        router.replace("/dashboard/home");
+      } catch (e) {
+        console.warn("[Parent Login] checkSession error:", e);
       }
     };
 
     checkSession();
   }, [router]);
 
+  const resolveSchoolKeyFromUsername = async (uname) => {
+    if (!uname || uname.length < 3) return null;
+    const prefix = uname.substring(0, 3).toUpperCase();
+
+    try {
+      const snap = await get(ref(database, `Platform1/schoolCodeIndex/${prefix}`));
+      if (snap.exists()) return snap.val();
+    } catch (e) {
+      console.warn("[Parent Login] resolveSchoolKeyFromUsername error:", e);
+    }
+
+    return null;
+  };
+
+  const findUserByUsername = async (uname) => {
+    const schoolKey = await resolveSchoolKeyFromUsername(uname);
+    if (!schoolKey) {
+      return { error: `School code not found for username prefix (${uname.substring(0, 3)})` };
+    }
+
+    try {
+      const usersRef = ref(database, `Platform1/Schools/${schoolKey}/Users`);
+      const q = query(usersRef, orderByChild("username"), equalTo(uname));
+      const snap = await get(q);
+
+      if (!snap.exists()) {
+        return { error: "No account found with that username in the resolved school." };
+      }
+
+      let found = null;
+      snap.forEach((child) => {
+        found = {
+          ...child.val(),
+          _nodeKey: child.key,
+          _schoolKey: schoolKey,
+        };
+        return true;
+      });
+
+      return { user: found };
+    } catch (err) {
+      console.error("[Parent Login] findUserByUsername error:", err);
+      return { error: "Lookup failed." };
+    }
+  };
+
   const handleNeedHelp = async () => {
     try {
-      // old DB path
-      const infoSnap = await get(ref(database, "schools/Guda Miju/info"));
+      const uname = username.trim();
+      let schoolKey = null;
+
+      if (uname && uname.length >= 3) {
+        schoolKey = await resolveSchoolKeyFromUsername(uname);
+      }
+
+      if (!schoolKey) {
+        schoolKey = await AsyncStorage.getItem("schoolKey");
+      }
+
+      if (!schoolKey) {
+        return Alert.alert("Unavailable", "Could not resolve school contact yet. Enter your username first.");
+      }
+
+      const infoSnap = await get(ref(database, `Platform1/Schools/${schoolKey}/schoolInfo`));
       if (!infoSnap.exists()) {
         return Alert.alert("Unavailable", "School contact is not available.");
       }
@@ -101,52 +177,46 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      // old DB path
-      const usersSnap = await get(ref(database, "Users"));
-      if (!usersSnap.exists()) {
-        setError("No users found in database.");
+      const { user, error: lookupError } = await findUserByUsername(uname);
+      if (lookupError) {
+        setError(lookupError);
         return;
       }
 
-      const users = usersSnap.val() || {};
-      let matchedUser = null;
-      let matchedKey = null;
-
-      for (const key of Object.keys(users)) {
-        const u = users[key] || {};
-        const isParent = String(u.role || "").toLowerCase() === "parent";
-        const usernameMatch = String(u.username || "").trim().toUpperCase() === uname.toUpperCase();
-        const passwordMatch = String(u.password ?? "").trim() === pwd;
-
-        if (isParent && usernameMatch && passwordMatch) {
-          matchedUser = u;
-          matchedKey = key;
-          break;
-        }
-      }
-
-      if (!matchedUser || !matchedKey) {
-        setError("Invalid username or password.");
+      if (!user) {
+        setError("No account found with that username.");
         return;
       }
 
-      if (typeof matchedUser.isActive === "boolean" && !matchedUser.isActive) {
+      if (String(user.role || "").toLowerCase() !== "parent") {
+        setError("This account is not a parent account.");
+        return;
+      }
+
+      const storedPwd = user.password == null ? "" : String(user.password).trim();
+      if (!storedPwd || storedPwd !== pwd) {
+        setError("Incorrect password.");
+        return;
+      }
+
+      if (typeof user.isActive === "boolean" && !user.isActive) {
         setError("Your account is inactive.");
         return;
       }
 
-      // old DB has no Parents node in your dump; parentId exists on user
-      const parentId = matchedUser.parentId || "";
+      const parentId = user.parentId || "";
 
       // clear old session keys and save fresh
       const oldKeys = await AsyncStorage.getAllKeys();
       if (oldKeys?.length) await AsyncStorage.multiRemove(oldKeys);
 
       await AsyncStorage.multiSet([
-        ["userId", matchedKey],
-        ["username", matchedUser.username || uname],
+        ["userId", user.userId || user._nodeKey || ""],
+        ["userNodeKey", user._nodeKey || ""],
+        ["username", user.username || uname],
         ["role", "parent"],
         ["parentId", parentId],
+        ["schoolKey", user._schoolKey || ""],
         ["lastLogin", Date.now().toString()],
       ]);
 
