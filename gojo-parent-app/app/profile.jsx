@@ -34,7 +34,7 @@ const HEADER_MIN_HEIGHT = 58;
 const MINI_AVATAR = 34;
 
 const PALETTE = {
-  background: "#F4F7FB",
+  background: "#ffffff",
   card: "#FFFFFF",
   accent: "#2296F3",
   accentDark: "#0B72C7",

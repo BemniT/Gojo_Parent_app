@@ -8,7 +8,6 @@ import {
   ActivityIndicator,
   Image,
   StatusBar,
-  ScrollView,
   RefreshControl,
   TextInput,
 } from "react-native";
@@ -34,6 +33,7 @@ function shortText(s, n = 60) {
   const t = String(s);
   return t.length > n ? t.slice(0, n - 1) + "…" : t;
 }
+
 function fmtTime12(ts) {
   if (!ts) return "";
   try {
@@ -80,13 +80,19 @@ export default function MessagesScreen() {
     let uId = await AsyncStorage.getItem("userId");
     if (uId) return uId;
 
-    const nodeKey = (await AsyncStorage.getItem("userNodeKey")) || null;
+    const nodeKey =
+      (await AsyncStorage.getItem("userNodeKey")) ||
+      (await AsyncStorage.getItem("studentNodeKey")) ||
+      (await AsyncStorage.getItem("studentId")) ||
+      null;
+
     if (!nodeKey) return null;
 
     try {
       const u = await getUserVal(nodeKey);
       if (u) return u.userId || nodeKey;
     } catch {}
+
     return nodeKey;
   }, []);
 
@@ -126,8 +132,8 @@ export default function MessagesScreen() {
         try {
           const studentsSnap = await get(await getDbRef("Students"));
           if (studentsSnap.exists()) {
-            studentsSnap.forEach((child) => {
-              const s = child.val() || {};
+            studentsSnap.forEach((childSnap) => {
+              const s = childSnap.val() || {};
               const parentsMap = s.parents || {};
               if (parentsMap[parentId] && s.userId) {
                 studentUserIds.add(String(s.userId));
@@ -147,8 +153,8 @@ export default function MessagesScreen() {
       try {
         const teachersSnap = await get(await getDbRef("Teachers"));
         if (teachersSnap.exists()) {
-          teachersSnap.forEach((child) => {
-            const t = child.val() || {};
+          teachersSnap.forEach((childSnap) => {
+            const t = childSnap.val() || {};
             if (t.userId) teacherUserNodeKeys.add(String(t.userId));
           });
         }
@@ -157,8 +163,8 @@ export default function MessagesScreen() {
       try {
         const saSnap = await get(await getDbRef("School_Admins"));
         if (saSnap.exists()) {
-          saSnap.forEach((child) => {
-            const v = child.val();
+          saSnap.forEach((childSnap) => {
+            const v = childSnap.val();
             if (v?.userId) managementMap.set(String(v.userId), "Management");
           });
         }
@@ -167,8 +173,8 @@ export default function MessagesScreen() {
       try {
         const regSnap = await get(await getDbRef("Registerers"));
         if (regSnap.exists()) {
-          regSnap.forEach((child) => {
-            const v = child.val();
+          regSnap.forEach((childSnap) => {
+            const v = childSnap.val();
             if (v?.userId) managementMap.set(String(v.userId), "Registerer");
           });
         }
@@ -177,8 +183,8 @@ export default function MessagesScreen() {
       try {
         const finSnap = await get(await getDbRef("Finances"));
         if (finSnap.exists()) {
-          finSnap.forEach((child) => {
-            const v = child.val();
+          finSnap.forEach((childSnap) => {
+            const v = childSnap.val();
             if (v?.userId) managementMap.set(String(v.userId), "Finance");
           });
         }
@@ -205,6 +211,7 @@ export default function MessagesScreen() {
       for (const nodeK of Array.from(studentUserNodeKeys)) {
         const p = userProfiles[nodeK] || null;
         if (!p) continue;
+
         contactsMap.set(nodeK, {
           key: nodeK,
           userId: p?.userId || nodeK,
@@ -212,8 +219,8 @@ export default function MessagesScreen() {
           role: "Child",
           profileImage: p?.profileImage || null,
           type: "student",
-          chatId: null,
-          lastMessage: null,
+          chatId: "",
+          lastMessage: "",
           lastTime: null,
           lastSenderId: null,
           lastSeen: false,
@@ -230,8 +237,8 @@ export default function MessagesScreen() {
           role: "Teacher",
           profileImage: p?.profileImage || null,
           type: "teacher",
-          chatId: null,
-          lastMessage: null,
+          chatId: "",
+          lastMessage: "",
           lastTime: null,
           lastSenderId: null,
           lastSeen: false,
@@ -241,6 +248,7 @@ export default function MessagesScreen() {
 
       for (const nodeK of Array.from(managementMap.keys())) {
         if (contactsMap.has(nodeK)) continue;
+
         const p = userProfiles[nodeK] || null;
         const roleLabel = managementMap.get(nodeK) || "Management";
 
@@ -251,8 +259,8 @@ export default function MessagesScreen() {
           role: roleLabel,
           profileImage: p?.profileImage || null,
           type: "management",
-          chatId: null,
-          lastMessage: null,
+          chatId: "",
+          lastMessage: "",
           lastTime: null,
           lastSenderId: null,
           lastSeen: false,
@@ -263,9 +271,9 @@ export default function MessagesScreen() {
       try {
         const chatsSnap = await get(await getDbRef("Chats"));
         if (chatsSnap.exists()) {
-          chatsSnap.forEach((child) => {
-            const chatKey = child.key;
-            const val = child.val() || {};
+          chatsSnap.forEach((childSnap) => {
+            const chatKey = childSnap.key;
+            const val = childSnap.val() || {};
             const participants = val.participants || {};
             const last = val.lastMessage || null;
             const unreadObj = val.unread || {};
@@ -324,8 +332,11 @@ export default function MessagesScreen() {
       await loadCacheAndShow();
       try {
         const fetchedAt = Number((await AsyncStorage.getItem("parentChatsCacheFetchedAt")) || 0);
-        if (!fetchedAt || Date.now() - fetchedAt > debounceWindowMs) loadData({ background: true });
-        else lastFetchedAtRef.current = fetchedAt;
+        if (!fetchedAt || Date.now() - fetchedAt > debounceWindowMs) {
+          loadData({ background: true });
+        } else {
+          lastFetchedAtRef.current = fetchedAt;
+        }
       } catch {
         loadData({ background: true });
       }
@@ -361,7 +372,12 @@ export default function MessagesScreen() {
 
     let myUserId = await AsyncStorage.getItem("userId");
     if (!myUserId) {
-      const nk = (await AsyncStorage.getItem("userNodeKey")) || null;
+      const nk =
+        (await AsyncStorage.getItem("userNodeKey")) ||
+        (await AsyncStorage.getItem("studentNodeKey")) ||
+        (await AsyncStorage.getItem("studentId")) ||
+        null;
+
       if (nk) {
         try {
           const u = await getUserVal(nk);
@@ -372,29 +388,42 @@ export default function MessagesScreen() {
       }
     }
 
-    let existingChatId = "";
-    if (myUserId && contactUserId) {
+    let existingChatId = contact.chatId || "";
+
+    if (!existingChatId && myUserId && contactUserId) {
       try {
         const c1 = makeDeterministicChatId(myUserId, contactUserId);
         const c2 = makeDeterministicChatId(contactUserId, myUserId);
+
         const s1 = await get(await getDbRef(`Chats/${c1}`));
-        if (s1.exists()) existingChatId = c1;
-        else {
+        if (s1.exists()) {
+          existingChatId = c1;
+        } else {
           const s2 = await get(await getDbRef(`Chats/${c2}`));
           if (s2.exists()) existingChatId = c2;
         }
       } catch {}
     }
 
-    setOpenedChat({
+    const payload = {
       chatId: existingChatId || "",
-      contactKey: contact.key || "",
-      contactUserId: contactUserId || "",
+      userId: contactUserId || "",
       contactName: contact.name || "",
       contactImage: contact.profileImage || "",
+    };
+
+    setOpenedChat({
+      chatId: payload.chatId,
+      contactUserId: payload.userId,
+      contactName: payload.contactName,
+      contactImage: payload.contactImage,
+      contactKey: contact.key || "",
     });
 
-    router.push("/chat");
+    router.push({
+      pathname: "/chat",
+      params: payload,
+    });
   };
 
   const byFilter = useMemo(() => {
@@ -465,14 +494,18 @@ export default function MessagesScreen() {
                 activeOpacity={0.85}
                 style={[styles.filterPill, filter === f ? styles.filterPillActive : null]}
               >
-                <Text style={[styles.filterPillText, filter === f ? styles.filterPillTextActive : null]}>{f}</Text>
+                <Text style={[styles.filterPillText, filter === f ? styles.filterPillTextActive : null]}>
+                  {f}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>
         </View>
 
         {loadingInitial && contacts.length === 0 ? (
-          <View style={styles.center}><ActivityIndicator size="large" color={PRIMARY} /></View>
+          <View style={styles.center}>
+            <ActivityIndicator size="large" color={PRIMARY} />
+          </View>
         ) : filteredContacts.length === 0 ? (
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyTitle}>No contacts</Text>
@@ -486,16 +519,24 @@ export default function MessagesScreen() {
             keyExtractor={(it) => it.key}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
             renderItem={({ item }) => {
-              const lastWasMine = item.lastSenderId && currentUserId && String(item.lastSenderId) === String(currentUserId);
+              const lastWasMine =
+                item.lastSenderId && currentUserId && String(item.lastSenderId) === String(currentUserId);
               const seenFlag = !!item.lastSeen;
+
               return (
                 <TouchableOpacity style={styles.itemWrapper} onPress={() => onOpenChat(item)} activeOpacity={0.9}>
                   <View style={styles.row}>
-                    <Image source={item.profileImage ? { uri: item.profileImage } : AVATAR_PLACEHOLDER} style={styles.avatar} />
+                    <Image
+                      source={item.profileImage ? { uri: item.profileImage } : AVATAR_PLACEHOLDER}
+                      style={styles.avatar}
+                    />
+
                     <View style={{ flex: 1, marginLeft: 12, minWidth: 0 }}>
                       <View style={styles.rowTop}>
                         <View style={styles.leftTop}>
-                          <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
+                          <Text style={styles.name} numberOfLines={1}>
+                            {item.name}
+                          </Text>
                           {item.role ? (
                             <View style={styles.badge}>
                               <Text style={styles.badgeText}>{item.role}</Text>
@@ -504,7 +545,10 @@ export default function MessagesScreen() {
                         </View>
 
                         <View style={styles.rightMeta}>
-                          <Text style={styles.time} numberOfLines={1}>{fmtTime12(item.lastTime)}</Text>
+                          <Text style={styles.time} numberOfLines={1}>
+                            {fmtTime12(item.lastTime)}
+                          </Text>
+
                           {lastWasMine ? (
                             <Ionicons
                               name={seenFlag ? "checkmark-done" : "checkmark"}
@@ -513,6 +557,7 @@ export default function MessagesScreen() {
                               style={{ marginLeft: 6 }}
                             />
                           ) : null}
+
                           {item.unread ? (
                             <View style={styles.unreadPill}>
                               <Text style={styles.unreadText}>{item.unread}</Text>
@@ -544,7 +589,14 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#fff" },
   container: { flex: 1, backgroundColor: "#fff" },
 
-  headerRow: { paddingHorizontal: 12, paddingTop: 12, paddingBottom: 6, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  headerRow: {
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   backButton: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
   headerTitle: { fontSize: 20, fontWeight: "800", color: "#111" },
 
@@ -634,7 +686,6 @@ const styles = StyleSheet.create({
   separatorLine: { height: 1, backgroundColor: "#EEF4FF", marginLeft: 56 + 12 + 8, marginRight: 0 },
 
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
-
   emptyWrap: { flex: 1, alignItems: "center", justifyContent: "center", paddingTop: 40, paddingHorizontal: 24 },
   emptyTitle: { fontWeight: "700", fontSize: 16, color: "#222", textAlign: "center" },
   emptySubtitle: { color: MUTED, marginTop: 6, textAlign: "center" },

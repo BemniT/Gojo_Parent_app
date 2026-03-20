@@ -8,8 +8,7 @@ import {
   Dimensions,
   Image,
   Linking,
-  Platform,
-  Pressable,
+  ScrollView,
   Share,
   StatusBar,
   StyleSheet,
@@ -23,19 +22,30 @@ import { child, get, push, ref, set } from "firebase/database";
 import { database } from "../constants/firebaseConfig";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-/* ---------------- THEME ---------------- */
-const PRIMARY = "#1E90FF";
-const BG = "#F4F7FB";
-const CARD = "#FFFFFF";
-const TEXT = "#0F172A";
-const MUTED = "#64748B";
-const BORDER = "#E5EDF5";
-const ACCENT_SOFT = "#EAF5FF";
-
 const { width } = Dimensions.get("window");
+
 const HEADER_MAX_HEIGHT = Math.max(220, Math.min(280, width * 0.68));
-const HEADER_MIN_HEIGHT = 96;
+const HEADER_MIN_HEIGHT = 58;
+const MINI_AVATAR = 34;
+
+const PALETTE = {
+  background: "#FFFFFF",
+  card: "#FFFFFF",
+  accent: "#2296F3",
+  accentDark: "#0B72C7",
+  accentSoft: "#EAF5FF",
+  text: "#0F172A",
+  subtext: "#475569",
+  muted: "#64748B",
+  border: "#E5EDF5",
+  white: "#FFFFFF",
+  danger: "#E53935",
+  success: "#10B981",
+  offline: "#94A3B8",
+};
+
 const defaultProfile = "https://cdn-icons-png.flaticon.com/512/847/847969.png";
+const WEEK_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
 export default function UserProfile() {
   const router = useRouter();
@@ -54,15 +64,17 @@ export default function UserProfile() {
   const [parentUserId, setParentUserId] = useState(null);
   const [parentRecordId, setParentRecordId] = useState(null);
 
-  const [children, setChildren] = useState([]);
   const [parents, setParents] = useState([]);
   const [teachers, setTeachers] = useState([]);
   const [teacherCourses, setTeacherCourses] = useState([]);
 
-  const [menuVisible, setMenuVisible] = useState(false);
+  const [studentWeeklySchedule, setStudentWeeklySchedule] = useState({});
+  const [studentGradeSection, setStudentGradeSection] = useState(null);
+  const [selectedScheduleDay, setSelectedScheduleDay] = useState(null);
+
+  const [showMenu, setShowMenu] = useState(false);
 
   const scrollY = useRef(new Animated.Value(0)).current;
-  const [showHero, setShowHero] = useState(true);
 
   const schoolAwarePath = useCallback(
     (subPath) => (schoolKey ? `Platform1/Schools/${schoolKey}/${subPath}` : subPath),
@@ -79,21 +91,15 @@ export default function UserProfile() {
 
       if (parentId) {
         setParentRecordId(parentId);
-        const parentSnap = await get(child(ref(database), `${sk ? `Platform1/Schools/${sk}/` : ""}Parents/${parentId}`));
+        const parentSnap = await get(
+          child(ref(database), `${sk ? `Platform1/Schools/${sk}/` : ""}Parents/${parentId}`)
+        );
         if (parentSnap.exists()) {
           setParentUserId(parentSnap.val()?.userId || null);
         }
       }
     })();
   }, []);
-
-  useEffect(() => {
-    const id = scrollY.addListener(({ value }) => {
-      if (value > 2 && showHero) setShowHero(false);
-      if (value <= 2 && !showHero) setShowHero(true);
-    });
-    return () => scrollY.removeListener(id);
-  }, [showHero, scrollY]);
 
   useEffect(() => {
     let mounted = true;
@@ -128,54 +134,31 @@ export default function UserProfile() {
 
         if (mounted) setResolvedUserId(localResolvedUserId || null);
 
+        const usersSnap = await get(child(ref(database), schoolAwarePath("Users")));
+        const usersData = usersSnap.exists() ? usersSnap.val() : {};
+
         if (localResolvedUserId) {
           const userSnap = await get(child(ref(database), `${schoolAwarePath("Users")}/${localResolvedUserId}`));
           if (mounted) setUser(userSnap.exists() ? userSnap.val() : null);
         }
 
-        const usersSnap = await get(child(ref(database), schoolAwarePath("Users")));
-        const usersData = usersSnap.exists() ? usersSnap.val() : {};
-
-        if (rId && detectedRole === "Parent") {
-          const parentSnap = await get(child(ref(database), `${schoolAwarePath("Parents")}/${rId}`));
-          if (parentSnap.exists()) {
-            const p = parentSnap.val();
-            const studentsSnap = await get(child(ref(database), schoolAwarePath("Students")));
-            const studentsData = studentsSnap.exists() ? studentsSnap.val() : {};
-
-            const rows = p.children
-              ? Object.values(p.children).map((link) => {
-                  const st = studentsData[link.studentId];
-                  const stUser = usersData[st?.userId] || {};
-                  return {
-                    studentId: link.studentId,
-                    relationship: link.relationship || "Child",
-                    name: stUser.name || "Student",
-                    profileImage: stUser.profileImage || defaultProfile,
-                    grade: st?.grade || "--",
-                    section: st?.section || "--",
-                  };
-                })
-              : [];
-
-            if (mounted) setChildren(rows);
-          }
-        }
-
         if (rId && detectedRole === "Student") {
-          const [studentSnap, teachersSnap, coursesSnap, assignmentsSnap] = await Promise.all([
+          const [studentSnap, teachersSnap, schedulesSnap] = await Promise.all([
             get(child(ref(database), `${schoolAwarePath("Students")}/${rId}`)),
             get(child(ref(database), schoolAwarePath("Teachers"))),
-            get(child(ref(database), schoolAwarePath("Courses"))),
-            get(child(ref(database), schoolAwarePath("TeacherAssignments"))),
+            get(child(ref(database), schoolAwarePath("Schedules"))),
           ]);
 
           const student = studentSnap.exists() ? studentSnap.val() : null;
           const teachersData = teachersSnap.exists() ? teachersSnap.val() : {};
-          const coursesData = coursesSnap.exists() ? coursesSnap.val() : {};
-          const assignmentData = assignmentsSnap.exists() ? assignmentsSnap.val() : {};
+          const schedulesData = schedulesSnap.exists() ? schedulesSnap.val() : {};
 
           if (student) {
+            const grade = student?.grade;
+            const section = student?.section;
+            const gradeSectionKey = `Grade ${grade}${section || ""}`;
+            setStudentGradeSection({ grade, section, key: gradeSectionKey });
+
             let parentRows = [];
             const parentMap = student.parents || {};
             for (const pid of Object.keys(parentMap)) {
@@ -214,69 +197,101 @@ export default function UserProfile() {
               }, []);
             }
 
-            const grade = student?.grade;
-            const section = student?.section;
-            const matchingCourseIds = Object.keys(coursesData).filter((cid) => {
-              const c = coursesData[cid];
-              return String(c?.grade) === String(grade) && String(c?.section || "") === String(section || "");
-            });
-
             const teacherMap = {};
-            Object.keys(assignmentData).forEach((aid) => {
-              const row = assignmentData[aid];
-              if (!row?.teacherId || !row?.courseId) return;
-              if (!matchingCourseIds.includes(row.courseId)) return;
 
-              if (!teacherMap[row.teacherId]) teacherMap[row.teacherId] = new Set();
-              const c = coursesData[row.courseId] || {};
-              teacherMap[row.teacherId].add(c.subject || c.name || "Course");
+            const teacherIndexByName = {};
+            Object.keys(teachersData || {}).forEach((teacherId) => {
+              const teacherNode = teachersData[teacherId];
+              const teacherUser = usersData?.[teacherNode?.userId] || {};
+              const nm = String(teacherUser?.name || "").trim().toLowerCase();
+              if (nm) {
+                teacherIndexByName[nm] = {
+                  teacherId,
+                  userId: teacherNode?.userId || null,
+                  name: teacherUser?.name || "Teacher",
+                  profileImage: teacherUser?.profileImage || defaultProfile,
+                };
+              }
             });
 
-            const teacherRows = Object.keys(teacherMap).map((tid) => {
-              const t = teachersData[tid] || {};
-              const tUser = usersData[t.userId] || {};
-              return {
-                teacherId: tid,
-                userId: t.userId,
-                name: tUser.name || tUser.username || "Teacher",
-                profileImage: tUser.profileImage || defaultProfile,
-                subjects: Array.from(teacherMap[tid]),
-              };
+            const weekly = {};
+            WEEK_DAYS.forEach((day) => {
+              const dayPeriods = schedulesData?.[day]?.[gradeSectionKey] || {};
+              const sorted = Object.entries(dayPeriods)
+                .map(([periodName, info]) => ({
+                  periodName,
+                  subject: info?.subject || "Free Period",
+                  teacherName: info?.teacherName || "Unassigned",
+                  isFree: (info?.subject || "Free Period") === "Free Period",
+                }))
+                .sort((a, b) => a.periodName.localeCompare(b.periodName));
+
+              weekly[day] = sorted;
+
+              sorted.forEach((period) => {
+                if (!period.teacherName || period.teacherName === "Unassigned") return;
+                if (period.subject === "Free Period") return;
+
+                const normalizedTeacherName = String(period.teacherName).trim().toLowerCase();
+                const teacherEntry = teacherIndexByName[normalizedTeacherName] || null;
+
+                const mapKey = teacherEntry?.teacherId || normalizedTeacherName;
+                if (!teacherMap[mapKey]) {
+                  teacherMap[mapKey] = {
+                    teacherId: teacherEntry?.teacherId || null,
+                    userId: teacherEntry?.userId || null,
+                    name: teacherEntry?.name || period.teacherName,
+                    profileImage: teacherEntry?.profileImage || defaultProfile,
+                    subjects: new Set(),
+                  };
+                }
+                teacherMap[mapKey].subjects.add(period.subject);
+              });
             });
+
+            const teacherRows = Object.values(teacherMap).map((t) => ({
+              ...t,
+              subjects: Array.from(t.subjects),
+            }));
+
+            const todayName = new Date().toLocaleDateString("en-US", { weekday: "long" });
+            const defaultDay = WEEK_DAYS.includes(todayName) ? todayName : "Monday";
 
             if (mounted) {
               setParents(parentRows);
               setTeachers(teacherRows);
+              setStudentWeeklySchedule(weekly);
+              setSelectedScheduleDay(defaultDay);
             }
           }
         }
 
         if (rId && detectedRole === "Teacher") {
-          const [coursesSnap, assignSnap] = await Promise.all([
-            get(child(ref(database), schoolAwarePath("Courses"))),
-            get(child(ref(database), schoolAwarePath("TeacherAssignments"))),
-          ]);
+          const gradeSnap = await get(child(ref(database), schoolAwarePath("GradeManagement/grades")));
+          const gradesData = gradeSnap.exists() ? gradeSnap.val() : {};
 
-          const coursesData = coursesSnap.exists() ? coursesSnap.val() : {};
-          const assignmentData = assignSnap.exists() ? assignSnap.val() : {};
+          const courseRows = [];
+          Object.keys(gradesData || {}).forEach((gradeKey) => {
+            const gradeNode = gradesData[gradeKey] || {};
+            const sectionTeacherMap = gradeNode?.sectionSubjectTeachers || {};
 
-          const assignedCourseIds = Object.keys(assignmentData)
-            .filter((aid) => assignmentData[aid]?.teacherId === rId)
-            .map((aid) => assignmentData[aid].courseId);
-
-          const uniqueCourseIds = Array.from(new Set(assignedCourseIds));
-
-          const rows = uniqueCourseIds.map((cid) => {
-            const c = coursesData[cid] || {};
-            return {
-              courseId: cid,
-              subject: c.subject || c.name || "Subject",
-              grade: c.grade || "--",
-              section: c.section || "--",
-            };
+            Object.keys(sectionTeacherMap).forEach((sectionKey) => {
+              const sectionAssignments = sectionTeacherMap[sectionKey] || {};
+              Object.keys(sectionAssignments).forEach((subjectKey) => {
+                const assignment = sectionAssignments[subjectKey];
+                if (assignment?.teacherId === rId) {
+                  courseRows.push({
+                    courseId: assignment?.courseId || `${gradeKey}-${sectionKey}-${subjectKey}`,
+                    subject: assignment?.subject || subjectKey,
+                    grade: gradeKey,
+                    section: sectionKey,
+                  });
+                }
+              });
+            });
           });
 
-          if (mounted) setTeacherCourses(rows);
+          if (mounted) setTeacherCourses(courseRows);
         }
       } catch (e) {
         console.warn("userProfile load error:", e);
@@ -305,15 +320,38 @@ export default function UserProfile() {
     return "School Profile";
   }, [isSelfProfile, roleName, teacherCourses]);
 
-  const smallNameOpacity = scrollY.interpolate({
-    inputRange: [0, HEADER_MAX_HEIGHT - HEADER_MIN_HEIGHT - 20, HEADER_MAX_HEIGHT - HEADER_MIN_HEIGHT],
-    outputRange: [0, 0, 1],
-    extrapolate: "clamp",
-  });
+  const selectedDayPeriods = useMemo(() => {
+    if (!selectedScheduleDay) return [];
+    return studentWeeklySchedule?.[selectedScheduleDay] || [];
+  }, [selectedScheduleDay, studentWeeklySchedule]);
 
   const headerHeight = scrollY.interpolate({
     inputRange: [0, HEADER_MAX_HEIGHT - HEADER_MIN_HEIGHT],
     outputRange: [HEADER_MAX_HEIGHT + insets.top, HEADER_MIN_HEIGHT + insets.top],
+    extrapolate: "clamp",
+  });
+
+  const compactBarOpacity = scrollY.interpolate({
+    inputRange: [0, 65, 125],
+    outputRange: [0, 0.25, 1],
+    extrapolate: "clamp",
+  });
+
+  const heroTranslateY = scrollY.interpolate({
+    inputRange: [0, 120],
+    outputRange: [0, -16],
+    extrapolate: "clamp",
+  });
+
+  const heroScale = scrollY.interpolate({
+    inputRange: [0, 120],
+    outputRange: [1, 0.96],
+    extrapolate: "clamp",
+  });
+
+  const heroOpacity = scrollY.interpolate({
+    inputRange: [0, 110, 180],
+    outputRange: [1, 0.7, 0],
     extrapolate: "clamp",
   });
 
@@ -325,6 +363,7 @@ export default function UserProfile() {
   const openChat = () => {
     if (!canMessageMain) return Alert.alert("Not allowed", "You cannot message yourself.");
     router.push({ pathname: "/chat", params: { userId: resolvedUserId } });
+    console.log("Opening chat with userId:", resolvedUserId);
   };
 
   const openChatWith = useCallback(
@@ -335,6 +374,8 @@ export default function UserProfile() {
       if (parentUserId && String(targetUserId) === String(parentUserId)) {
         return Alert.alert("Not allowed", "You cannot message yourself.");
       }
+          console.log("Opening chat with userId:", targetUserId);
+
       router.push({ pathname: "/chat", params: { userId: targetUserId } });
     },
     [router, parentUserId]
@@ -381,7 +422,8 @@ export default function UserProfile() {
   if (loading) {
     return (
       <View style={styles.loadingWrap}>
-        <ActivityIndicator size="large" color={PRIMARY} />
+        <ActivityIndicator size="large" color={PALETTE.accent} />
+        <Text style={styles.loadingText}>Loading profile...</Text>
       </View>
     );
   }
@@ -390,50 +432,49 @@ export default function UserProfile() {
     <View style={styles.container}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
 
-      <View style={[styles.topBar, { top: insets.top + 8 }]}>
+      <View style={[styles.topActionsRow, { top: insets.top + 8 }]}>
         <TouchableOpacity style={styles.topIcon} onPress={handleBack}>
-          <Ionicons name="arrow-back" size={22} color="#fff" />
+          <Ionicons name="arrow-back" size={21} color="#fff" />
         </TouchableOpacity>
 
-        <View style={styles.topTitleStack}>
-          <Animated.Text style={[styles.topName, { opacity: smallNameOpacity }]} numberOfLines={1}>
-            {user?.name}
-          </Animated.Text>
-          <Animated.Text style={[styles.topSub, { opacity: smallNameOpacity }]} numberOfLines={1}>
-            {profileSubtitle}
-          </Animated.Text>
-        </View>
+        <Animated.View style={[styles.compactCenter, { opacity: compactBarOpacity }]}>
+          <Image source={{ uri: user?.profileImage || defaultProfile }} style={styles.compactAvatar} />
+          <View>
+            <Text style={styles.compactName} numberOfLines={1}>
+              {user?.name}
+            </Text>
+            <Text style={styles.compactSub}>{profileSubtitle}</Text>
+          </View>
+        </Animated.View>
 
-        <TouchableOpacity style={styles.topIcon} onPress={() => setMenuVisible((v) => !v)}>
-          <Ionicons name="ellipsis-vertical" size={22} color="#fff" />
+        <TouchableOpacity style={styles.topIcon} onPress={() => setShowMenu((v) => !v)}>
+          <Ionicons name="ellipsis-vertical" size={20} color="#fff" />
         </TouchableOpacity>
       </View>
 
-      {menuVisible && (
+      {showMenu && (
         <>
-          <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)} />
+          <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setShowMenu(false)} />
           <View style={[styles.dropdownMenu, { top: insets.top + 52 }]}>
-            <Pressable
+            <TouchableOpacity
               style={styles.menuItem}
               onPress={async () => {
-                setMenuVisible(false);
+                setShowMenu(false);
                 await handleShare();
               }}
             >
-              <Ionicons name="share-outline" size={18} color={PRIMARY} style={{ marginRight: 8 }} />
               <Text style={styles.menuText}>Share</Text>
-            </Pressable>
+            </TouchableOpacity>
             {!isSelfProfile && (
-              <Pressable
-                style={styles.menuItem}
+              <TouchableOpacity
+                style={[styles.menuItem, styles.menuItemNoBorder]}
                 onPress={async () => {
-                  setMenuVisible(false);
+                  setShowMenu(false);
                   await handleReport();
                 }}
               >
-                <Ionicons name="warning-outline" size={18} color="#F59E0B" style={{ marginRight: 8 }} />
-                <Text style={styles.menuText}>Report User</Text>
-              </Pressable>
+                <Text style={[styles.menuText, { color: "#F59E0B" }]}>Report User</Text>
+              </TouchableOpacity>
             )}
           </View>
         </>
@@ -443,47 +484,20 @@ export default function UserProfile() {
         scrollEventThrottle={16}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], {
           useNativeDriver: false,
-          listener: (e) => {
-            const y = e.nativeEvent.contentOffset.y;
-            if (y > 2 && showHero) setShowHero(false);
-            if (y <= 2 && !showHero) setShowHero(true);
-          },
         })}
         contentContainerStyle={{
-          paddingTop: HEADER_MAX_HEIGHT + insets.top + 10,
-          paddingBottom: 24 + insets.bottom,
+          paddingTop: HEADER_MAX_HEIGHT + insets.top + 14,
+          paddingBottom: Math.max(24, insets.bottom + 8),
         }}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.contentWrap}>
-          <View style={styles.card}>
-            <View style={styles.identityRow}>
-              <Image source={{ uri: user?.profileImage || defaultProfile }} style={styles.identityAvatar} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.identityName}>{user?.name || "User"}</Text>
-                <Text style={styles.identitySub}>{profileSubtitle}</Text>
-                <View style={styles.rolePill}>
-                  <Text style={styles.rolePillText}>{roleName || "User"}</Text>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.actionRow}>
-              {canMessageMain && (
-                <TouchableOpacity style={styles.actionBtn} onPress={openChat}>
-                  <Ionicons name="chatbubble-ellipses-outline" size={18} color={PRIMARY} />
-                  <Text style={styles.actionText}>Message</Text>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity style={styles.actionBtn} onPress={handleCall}>
-                <Ionicons name="call-outline" size={18} color={PRIMARY} />
-                <Text style={styles.actionText}>Call</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.actionBtn} onPress={handleShare}>
-                <Ionicons name="share-social-outline" size={18} color={PRIMARY} />
-                <Text style={styles.actionText}>Share</Text>
-              </TouchableOpacity>
-            </View>
+          <View style={styles.quickActions}>
+            {canMessageMain && (
+              <QuickAction icon="chatbubble-ellipses-outline" label="Message" onPress={openChat} />
+            )}
+            <QuickAction icon="call-outline" label="Call" onPress={handleCall} />
+            <QuickAction icon="share-social-outline" label="Share" onPress={handleShare} />
           </View>
 
           <View style={styles.card}>
@@ -495,63 +509,144 @@ export default function UserProfile() {
             <InfoRow label="Role" value={roleName} />
           </View>
 
-          {children.length > 0 && (
-            <View style={styles.card}>
-              <SectionHeader title="Children" icon="people-outline" />
-              {children.map((c) => (
-                <PersonRow
-                  key={c.studentId}
-                  name={c.name}
-                  subtitle={`Grade ${c.grade} • Section ${c.section}`}
-                  extra={`Relation: ${c.relationship}`}
-                  image={c.profileImage}
-                  onPress={() => router.push(`/userProfile?recordId=${c.studentId}`)}
-                />
-              ))}
-            </View>
-          )}
+          {roleName === "Student" && (
+            <>
+              <View style={styles.card}>
+                <SectionHeader title="Periods" icon="calendar-outline" />
 
-          {parents.length > 0 && (
-            <View style={styles.card}>
-              <SectionHeader title="Parents" icon="home-outline" />
-              {parents.map((p) => (
-                <PersonRow
-                  key={p.parentId}
-                  name={p.name}
-                  subtitle={`Relation: ${p.relationship}`}
-                  image={p.profileImage}
-                  onPress={() => {
-                    if (parentRecordId && p.parentId === parentRecordId) router.push("/profile");
-                    else router.push(`/userProfile?recordId=${p.parentId}`);
-                  }}
-                  onMessage={
-                    p.userId && (!parentUserId || String(p.userId) !== String(parentUserId))
-                      ? () => openChatWith(p.userId, p.name)
-                      : null
-                  }
-                />
-              ))}
-            </View>
-          )}
+                {studentGradeSection?.key ? (
+                  <Text style={styles.scheduleHeaderText}>{studentGradeSection.key}</Text>
+                ) : null}
 
-          {teachers.length > 0 && (
-            <View style={styles.card}>
-              <SectionHeader title="Teachers" icon="school-outline" />
-              {teachers.map((t) => (
-                <PersonRow
-                  key={t.teacherId}
-                  name={t.name}
-                  subtitle={t.subjects?.length ? t.subjects.join(", ") : "Teacher"}
-                  image={t.profileImage}
-                  onPress={() => router.push(`/userProfile?recordId=${t.teacherId}`)}
-                  onMessage={
-                    t.userId && (!parentUserId || String(t.userId) !== String(parentUserId))
-                      ? () => openChatWith(t.userId, t.name)
-                      : null
-                  }
-                />
-              ))}
-            </View>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.dayChipRow}
+                >
+                  {WEEK_DAYS.map((day) => {
+                    const active = selectedScheduleDay === day;
+                    const dayCount = studentWeeklySchedule?.[day]?.length || 0;
+                    return (
+                      <TouchableOpacity
+                        key={day}
+                        style={[styles.dayChip, active && styles.dayChipActive]}
+                        onPress={() => setSelectedScheduleDay(day)}
+                        activeOpacity={0.88}
+                      >
+                        <Text style={[styles.dayChipTitle, active && styles.dayChipTitleActive]}>
+                          {day}
+                        </Text>
+                        <Text style={[styles.dayChipSub, active && styles.dayChipSubActive]}>
+                          {dayCount} period{dayCount === 1 ? "" : "s"}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+
+                <View style={styles.selectedDayBanner}>
+                  <Ionicons name="time-outline" size={16} color={PALETTE.accentDark} />
+                  <Text style={styles.selectedDayBannerText}>
+                    {selectedScheduleDay || "Today"}'s periods
+                  </Text>
+                </View>
+
+                <View style={styles.periodsViewport}>
+                  <ScrollView
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator={selectedDayPeriods.length > 4}
+                    contentContainerStyle={styles.periodsViewportContent}
+                  >
+                    {selectedDayPeriods.length ? (
+                      selectedDayPeriods.map((p, index) => (
+                        <View
+                          key={`${selectedScheduleDay}-${p.periodName}`}
+                          style={[
+                            styles.periodCard,
+                            p.isFree && styles.periodCardFree,
+                            index === 0 && { marginTop: 0 },
+                          ]}
+                        >
+                          <View style={styles.periodTopRow}>
+                            <View style={[styles.periodBadge, p.isFree && styles.periodBadgeFree]}>
+                              <Text style={[styles.periodBadgeText, p.isFree && styles.periodBadgeTextFree]}>
+                                {p.periodName}
+                              </Text>
+                            </View>
+
+                            <View
+                              style={[
+                                styles.subjectMiniChip,
+                                p.isFree && styles.subjectMiniChipFree,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.subjectMiniChipText,
+                                  p.isFree && styles.subjectMiniChipTextFree,
+                                ]}
+                              >
+                                {p.isFree ? "Free" : "Class"}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <Text style={[styles.periodSubject, p.isFree && styles.periodSubjectFree]}>
+                            {p.subject}
+                          </Text>
+                          <Text style={styles.periodTeacher}>{p.teacherName}</Text>
+                        </View>
+                      ))
+                    ) : (
+                      <Text style={styles.emptyText}>No schedule found for this day.</Text>
+                    )}
+                  </ScrollView>
+                </View>
+              </View>
+
+              {parents.length > 0 && (
+                <View style={styles.card}>
+                  <SectionHeader title="Parents" icon="home-outline" />
+                  {parents.map((p) => (
+                    <PersonRow
+                      key={p.parentId}
+                      name={p.name}
+                      subtitle={`Relation: ${p.relationship}`}
+                      image={p.profileImage}
+                      onPress={() => {
+                        if (parentRecordId && p.parentId === parentRecordId) router.push("/profile");
+                        else router.push(`/userProfile?recordId=${p.parentId}`);
+                      }}
+                      onMessage={
+                        p.userId && (!parentUserId || String(p.userId) !== String(parentUserId))
+                          ? () => openChatWith(p.userId, p.name)
+                          : null
+                      }
+                    />
+                  ))}
+                </View>
+              )}
+
+              {teachers.length > 0 && (
+                <View style={styles.card}>
+                  <SectionHeader title="Teachers" icon="school-outline" />
+                  {teachers.map((t) => (
+                    <PersonRow
+                      key={t.teacherId || t.name}
+                      name={t.name}
+                      subtitle={t.subjects?.length ? t.subjects.join(", ") : "Teacher"}
+                      image={t.profileImage}
+                      onPress={() => (t.teacherId ? router.push(`/userProfile?recordId=${t.teacherId}`) : null)}
+                      onMessage={
+                        t.userId && (!parentUserId || String(t.userId) !== String(parentUserId))
+                          ? () => openChatWith(t.userId, t.name)
+                          : null
+                      }
+                    />
+                  ))}
+                </View>
+              )}
+            </>
           )}
 
           {roleName === "Teacher" && teacherCourses.length > 0 && (
@@ -565,6 +660,48 @@ export default function UserProfile() {
               ))}
             </View>
           )}
+
+          {roleName === "Parent" && (
+            <View style={styles.card}>
+              <SectionHeader title="Account" icon="settings-outline" />
+
+              <TouchableOpacity
+                style={styles.accountItem}
+                onPress={canMessageMain ? openChat : handleShare}
+              >
+                <View style={[styles.accountIconWrap, { backgroundColor: "#E9F5FF" }]}>
+                  <Ionicons
+                    name={canMessageMain ? "chatbubble-ellipses-outline" : "share-social-outline"}
+                    size={18}
+                    color={PALETTE.accentDark}
+                  />
+                </View>
+                <Text style={styles.accountText}>
+                  {canMessageMain ? "Send Message" : "Share Profile"}
+                </Text>
+                <Ionicons name="chevron-forward-outline" size={18} color="#8EA1B5" />
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.accountItem} onPress={handleCall}>
+                <View style={[styles.accountIconWrap, { backgroundColor: "#ECFDF3" }]}>
+                  <Ionicons name="call-outline" size={18} color="#059669" />
+                </View>
+                <Text style={styles.accountText}>Call User</Text>
+                <Ionicons name="chevron-forward-outline" size={18} color="#8EA1B5" />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.accountItem, styles.accountItemNoBorder]}
+                onPress={handleShare}
+              >
+                <View style={[styles.accountIconWrap, { backgroundColor: "#F1F5FF" }]}>
+                  <Ionicons name="share-social-outline" size={18} color="#4F46E5" />
+                </View>
+                <Text style={styles.accountText}>Share Profile</Text>
+                <Ionicons name="chevron-forward-outline" size={18} color="#8EA1B5" />
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
       </Animated.ScrollView>
 
@@ -572,22 +709,29 @@ export default function UserProfile() {
         <Image source={{ uri: user?.profileImage || defaultProfile }} style={styles.headerBgImage} />
         <View style={styles.headerBgOverlay} />
 
-        {showHero && (
-          <View style={[styles.heroWrap, { bottom: 12 }]}>
-            <View style={styles.photoCard}>
-              <Image source={{ uri: user?.profileImage || defaultProfile }} style={styles.photoCardImage} />
-            </View>
+        <Animated.View
+          style={[
+            styles.heroWrap,
+            {
+              transform: [{ translateY: heroTranslateY }, { scale: heroScale }],
+              opacity: heroOpacity,
+            },
+          ]}
+        >
+          <View style={styles.photoCard}>
+            <Image source={{ uri: user?.profileImage || defaultProfile }} style={styles.photoCardImage} />
+          </View>
 
-            <View style={styles.identityCardHero}>
-              <Text style={styles.heroName} numberOfLines={1}>
+          <View style={styles.identitySide}>
+            <View style={styles.identityCard}>
+              <Text style={styles.identityName} numberOfLines={1}>
                 {user?.name}
               </Text>
-              <Text style={styles.heroSub} numberOfLines={1}>
-                {profileSubtitle}
-              </Text>
+              {!!user?.username && <Text style={styles.identityUsername}>@{user.username}</Text>}
+              <Text style={styles.identityRole}>{profileSubtitle}</Text>
             </View>
           </View>
-        )}
+        </Animated.View>
       </Animated.View>
     </View>
   );
@@ -597,10 +741,21 @@ function SectionHeader({ title, icon }) {
   return (
     <View style={styles.sectionHeader}>
       <View style={styles.sectionIconWrap}>
-        <Ionicons name={icon} size={16} color="#0B72C7" />
+        <Ionicons name={icon} size={16} color={PALETTE.accentDark} />
       </View>
       <Text style={styles.sectionTitle}>{title}</Text>
     </View>
+  );
+}
+
+function QuickAction({ icon, label, onPress }) {
+  return (
+    <TouchableOpacity style={styles.quickActionItem} onPress={onPress} activeOpacity={0.88}>
+      <View style={styles.quickActionIcon}>
+        <Ionicons name={icon} size={18} color={PALETTE.accentDark} />
+      </View>
+      <Text style={styles.quickActionLabel}>{label}</Text>
+    </TouchableOpacity>
   );
 }
 
@@ -616,62 +771,99 @@ function InfoRow({ label, value }) {
 
 function PersonRow({ name, subtitle, extra, image, onPress, onMessage }) {
   return (
-    <TouchableOpacity style={styles.personCard} onPress={onPress} activeOpacity={0.86}>
-      <Image source={{ uri: image || defaultProfile }} style={styles.personAvatar} />
-      <View style={{ flex: 1, marginLeft: 12 }}>
-        <Text style={styles.personName}>{name}</Text>
-        {!!subtitle && <Text style={styles.personMeta}>{subtitle}</Text>}
-        {!!extra && <Text style={styles.personMeta}>{extra}</Text>}
+    <TouchableOpacity style={styles.childCard} onPress={onPress} activeOpacity={0.88}>
+      <Image source={{ uri: image || defaultProfile }} style={styles.childImage} />
+      <View style={styles.childBody}>
+        <Text style={styles.childName}>{name}</Text>
+        {!!subtitle && <Text style={styles.childMeta}>{subtitle}</Text>}
+        {!!extra && <Text style={styles.childMeta}>{extra}</Text>}
       </View>
 
       <View style={{ flexDirection: "row", alignItems: "center" }}>
         {onMessage && (
           <TouchableOpacity style={styles.msgBtn} onPress={onMessage}>
-            <Ionicons name="chatbubble-ellipses-outline" size={18} color={PRIMARY} />
+            <Ionicons name="chatbubble-ellipses-outline" size={18} color={PALETTE.accent} />
           </TouchableOpacity>
         )}
-        <Ionicons name="chevron-forward" size={20} color="#94A3B8" />
+        <Ionicons name="chevron-forward" size={18} color="#8EA1B5" />
       </View>
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: BG },
-  loadingWrap: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: BG },
+  container: { flex: 1, backgroundColor: PALETTE.background },
 
-  topBar: {
+  loadingWrap: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: PALETTE.background,
+  },
+  loadingText: {
+    marginTop: 10,
+    color: PALETTE.muted,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+
+  topActionsRow: {
     position: "absolute",
     left: 12,
     right: 12,
-    height: 40,
-    zIndex: 120,
+    height: 44,
+    zIndex: 150,
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "space-between",
   },
   topIcon: {
     width: 40,
     height: 40,
     borderRadius: 20,
     backgroundColor: "rgba(15, 23, 42, 0.28)",
-    justifyContent: "center",
     alignItems: "center",
+    justifyContent: "center",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.24)",
   },
-  topTitleStack: { alignItems: "center", justifyContent: "center", maxWidth: "62%" },
-  topName: { color: "#fff", fontSize: 15, fontWeight: "700" },
-  topSub: { color: "#DBEAFE", fontSize: 11, marginTop: 1 },
+
+  compactCenter: {
+    position: "absolute",
+    left: 56,
+    right: 56,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  compactAvatar: {
+    width: MINI_AVATAR,
+    height: MINI_AVATAR,
+    borderRadius: 9,
+    marginRight: 8,
+    borderWidth: 1.5,
+    borderColor: "#fff",
+  },
+  compactName: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+    maxWidth: 160,
+  },
+  compactSub: {
+    color: "#DBEAFE",
+    fontSize: 11,
+    marginTop: 1,
+  },
 
   header: {
     position: "absolute",
+    top: 0,
     left: 0,
     right: 0,
-    top: 0,
-    overflow: "hidden",
-    backgroundColor: PRIMARY,
+    backgroundColor: PALETTE.accent,
     zIndex: 10,
+    overflow: "hidden",
   },
   headerBgImage: {
     ...StyleSheet.absoluteFillObject,
@@ -687,12 +879,14 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 16,
     right: 16,
+    bottom: 12,
     flexDirection: "row",
-    alignItems: "stretch",
+    alignItems: "flex-end",
   },
+
   photoCard: {
-    width: 120,
-    height: 144,
+    width: 124,
+    height: 148,
     borderRadius: 20,
     overflow: "hidden",
     borderWidth: 2,
@@ -703,97 +897,190 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
   },
-  identityCardHero: {
+
+  identitySide: {
     flex: 1,
     marginLeft: 12,
-    backgroundColor: "rgba(15,23,42,0.36)",
+    alignSelf: "flex-end",
+    justifyContent: "flex-end",
+  },
+  identityCard: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(15,23,42,0.34)",
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.28)",
+    borderColor: "rgba(255,255,255,0.25)",
     paddingVertical: 12,
     paddingHorizontal: 12,
-    justifyContent: "center",
+    minWidth: "76%",
+    maxWidth: "100%",
   },
-  heroName: { color: "#fff", fontSize: 20, fontWeight: "800", letterSpacing: 0.2 },
-  heroSub: { color: "#DDEAFE", fontSize: 13, marginTop: 3 },
-
-  contentWrap: { paddingHorizontal: 14, gap: 12 },
-
-  card: {
-    backgroundColor: CARD,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: BORDER,
-    padding: 14,
+  identityName: {
+    color: "#fff",
+    fontSize: 19,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  identityUsername: {
+    color: "#DDEAFE",
+    fontSize: 13,
+    fontWeight: "600",
+    marginTop: 3,
+  },
+  identityRole: {
+    color: "#E2E8F0",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 8,
   },
 
-  identityRow: { flexDirection: "row", alignItems: "center" },
-  identityAvatar: { width: 64, height: 64, borderRadius: 16, backgroundColor: "#E5E7EB", marginRight: 12 },
-  identityName: { fontSize: 18, fontWeight: "800", color: TEXT },
-  identitySub: { fontSize: 12, color: MUTED, marginTop: 2 },
-
-  rolePill: {
-    marginTop: 7,
-    alignSelf: "flex-start",
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#BFDBFE",
-    backgroundColor: "#EEF4FF",
-  },
-  rolePillText: { fontSize: 12, fontWeight: "700", color: "#1E3A8A" },
-
-  actionRow: { marginTop: 14, flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  actionBtn: {
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 10,
-    paddingVertical: 10,
+  contentWrap: {
     paddingHorizontal: 14,
+    gap: 12,
+  },
+
+  quickActions: {
+    backgroundColor: PALETTE.card,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+    borderRadius: 18,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    shadowColor: "rgba(15,23,42,0.03)",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 2,
+  },
+  quickActionItem: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F8FAFC",
-    flexDirection: "row",
-    gap: 6,
   },
-  actionText: { fontSize: 12, fontWeight: "700", color: "#334155" },
+  quickActionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: PALETTE.accentSoft,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 6,
+  },
+  quickActionLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#33506D",
+  },
 
-  sectionHeader: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
+  card: {
+    backgroundColor: PALETTE.card,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+    padding: 14,
+    shadowColor: "rgba(15,23,42,0.03)",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 2,
+  },
+
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+  },
   sectionIconWrap: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: ACCENT_SOFT,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: PALETTE.accentSoft,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 8,
   },
-  sectionTitle: { fontSize: 16, fontWeight: "800", color: TEXT },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: PALETTE.text,
+  },
 
   infoRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingVertical: 8,
+    gap: 12,
+    paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: "#EFF4FA",
   },
-  infoLabel: { color: MUTED, fontSize: 13, fontWeight: "600" },
-  infoValue: { color: TEXT, fontSize: 13, fontWeight: "700", maxWidth: "62%", textAlign: "right" },
+  infoLabel: {
+    color: PALETTE.muted,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  infoValue: {
+    color: PALETTE.text,
+    fontSize: 13,
+    fontWeight: "700",
+    maxWidth: "64%",
+    textAlign: "right",
+  },
 
-  personCard: {
+  childCard: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 8,
+    marginVertical: 6,
     padding: 12,
     backgroundColor: "#FAFCFF",
-    borderRadius: 13,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: PALETTE.border,
   },
-  personAvatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: "#E5E7EB" },
-  personName: { fontSize: 15, fontWeight: "700", color: TEXT },
-  personMeta: { fontSize: 12.5, color: MUTED, marginTop: 2 },
+  childImage: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+  },
+  childBody: { flex: 1, marginLeft: 12 },
+  childName: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: PALETTE.text,
+  },
+  childMeta: {
+    fontSize: 12.5,
+    color: PALETTE.muted,
+    marginTop: 2,
+  },
+
+  accountItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: PALETTE.border,
+  },
+  accountItemNoBorder: {
+    borderBottomWidth: 0,
+  },
+  accountIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  accountText: {
+    fontSize: 15,
+    marginLeft: 11,
+    flex: 1,
+    color: PALETTE.text,
+    fontWeight: "650",
+  },
 
   msgBtn: {
     marginRight: 10,
@@ -804,24 +1091,161 @@ const styles = StyleSheet.create({
 
   subjectRow: {
     padding: 12,
-    borderRadius: 10,
+    borderRadius: 12,
     backgroundColor: "#F8FAFC",
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: PALETTE.border,
     marginTop: 8,
   },
-  subjectName: { fontSize: 14, color: TEXT, fontWeight: "700" },
-  subjectMeta: { fontSize: 12.5, color: MUTED, marginTop: 3 },
+  subjectName: { fontSize: 14, color: PALETTE.text, fontWeight: "700" },
+  subjectMeta: { fontSize: 12.5, color: PALETTE.muted, marginTop: 3 },
+
+  scheduleHeaderText: {
+    fontSize: 12.5,
+    color: PALETTE.muted,
+    fontWeight: "700",
+    marginBottom: 10,
+  },
+
+  dayChipRow: {
+    gap: 10,
+    paddingRight: 6,
+    paddingBottom: 8,
+  },
+  dayChip: {
+    minWidth: 122,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  dayChipActive: {
+    backgroundColor: "#EEF6FF",
+    borderColor: "#BFDBFE",
+  },
+  dayChipTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: PALETTE.text,
+  },
+  dayChipTitleActive: {
+    color: PALETTE.accentDark,
+  },
+  dayChipSub: {
+    fontSize: 11,
+    color: PALETTE.muted,
+    marginTop: 3,
+    fontWeight: "600",
+  },
+  dayChipSubActive: {
+    color: PALETTE.accentDark,
+  },
+
+  selectedDayBanner: {
+    marginTop: 12,
+    marginBottom: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: PALETTE.accentSoft,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    alignSelf: "flex-start",
+  },
+  selectedDayBannerText: {
+    marginLeft: 6,
+    color: PALETTE.accentDark,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  periodCard: {
+    marginTop: 10,
+    padding: 13,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+    backgroundColor: "#FAFCFF",
+  },
+  periodCardFree: {
+    backgroundColor: "#F8FAFC",
+  },
+  periodTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  periodBadge: {
+    backgroundColor: "#EEF4FF",
+    borderWidth: 1,
+    borderColor: "#BFDBFE",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  periodBadgeFree: {
+    backgroundColor: "#F1F5F9",
+    borderColor: "#E2E8F0",
+  },
+  periodBadgeText: {
+    color: "#1E3A8A",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  periodBadgeTextFree: {
+    color: "#64748B",
+  },
+  subjectMiniChip: {
+    backgroundColor: "#DBEAFE",
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  subjectMiniChipFree: {
+    backgroundColor: "#E2E8F0",
+  },
+  subjectMiniChipText: {
+    color: PALETTE.accentDark,
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  subjectMiniChipTextFree: {
+    color: "#64748B",
+  },
+  periodSubject: {
+    marginTop: 10,
+    fontSize: 16,
+    color: PALETTE.text,
+    fontWeight: "800",
+  },
+  periodSubjectFree: {
+    color: "#64748B",
+  },
+  periodTeacher: {
+    marginTop: 4,
+    fontSize: 12.5,
+    color: PALETTE.muted,
+    fontWeight: "600",
+  },
+
+  emptyText: {
+    fontSize: 13,
+    color: PALETTE.muted,
+    fontWeight: "600",
+    marginTop: 8,
+  },
 
   dropdownMenu: {
     position: "absolute",
     right: 10,
-    backgroundColor: "#fff",
+    backgroundColor: PALETTE.card,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: PALETTE.border,
     zIndex: 1000,
-    minWidth: 180,
+    minWidth: 190,
     overflow: "hidden",
   },
   menuOverlay: {
@@ -835,11 +1259,14 @@ const styles = StyleSheet.create({
   },
   menuItem: {
     paddingVertical: 12,
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
-    flexDirection: "row",
-    alignItems: "center",
   },
-  menuText: { fontSize: 15, color: TEXT, fontWeight: "600" },
+  menuItemNoBorder: { borderBottomWidth: 0 },
+  menuText: {
+    fontSize: 15,
+    color: PALETTE.text,
+    fontWeight: "600",
+  },
 });

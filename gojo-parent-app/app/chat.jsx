@@ -1,5 +1,4 @@
-// app/chat.jsx
-import React, { useEffect, useState, useRef, useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -16,7 +15,7 @@ import {
   Modal,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { ref, push, update, get, onValue, off } from "firebase/database";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -53,6 +52,7 @@ function fmtTime12(ts) {
 function stripTime(d) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
+
 function dateLabelForTs(ts) {
   if (!ts) return "";
   const date = new Date(Number(ts));
@@ -73,29 +73,28 @@ async function getDbRef(subPath) {
   return ref(database, `${prefix}${subPath}`);
 }
 
-export default function ChatScreen(props) {
+export default function ChatScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const storage = getStorage();
+  const params = useLocalSearchParams();
+
+  const routeChatId = typeof params.chatId === "string" ? params.chatId : "";
+  const routeUserId = typeof params.userId === "string" ? params.userId : "";
+  const routeContactName = typeof params.contactName === "string" ? params.contactName : "";
+  const routeContactImage = typeof params.contactImage === "string" ? params.contactImage : "";
 
   const opened = getOpenedChat() || {};
-  const routeParams = (props && props.route && props.route.params) ? props.route.params : {};
-  const chatFromStore = {
-    chatId: opened.chatId ?? routeParams.chatId ?? "",
-    contactKey: opened.contactKey ?? routeParams.contactKey ?? "",
-    contactUserId: opened.contactUserId ?? routeParams.contactUserId ?? "",
-    contactName: opened.contactName ?? routeParams.contactName ?? "",
-    contactImage: opened.contactImage ?? routeParams.contactImage ?? null,
-  };
-  clearOpenedChat();
+
+  const [bootstrapped, setBootstrapped] = useState(false);
 
   const [currentUserId, setCurrentUserId] = useState(null);
   const [currentUserNodeKey, setCurrentUserNodeKey] = useState(null);
-  const [chatId, setChatId] = useState(chatFromStore.chatId || "");
-  const [contactUserId, setContactUserId] = useState(chatFromStore.contactUserId || "");
-  const [contactKey, setContactKey] = useState(chatFromStore.contactKey || "");
-  const [contactName, setContactName] = useState(chatFromStore.contactName || "");
-  const [contactImage, setContactImage] = useState(chatFromStore.contactImage || null);
+
+  const [chatId, setChatId] = useState("");
+  const [contactUserId, setContactUserId] = useState("");
+  const [contactName, setContactName] = useState("");
+  const [contactImage, setContactImage] = useState(null);
   const [contactSubtitle, setContactSubtitle] = useState("");
 
   const [messages, setMessages] = useState([]);
@@ -112,7 +111,6 @@ export default function ChatScreen(props) {
   const [viewerFallbackUri, setViewerFallbackUri] = useState(null);
   const [viewerLibAvailable, setViewerLibAvailable] = useState(null);
 
-  // Edit/Delete state
   const [actionSheetVisible, setActionSheetVisible] = useState(false);
   const [activeMessage, setActiveMessage] = useState(null);
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -124,57 +122,34 @@ export default function ChatScreen(props) {
 
   const makeDeterministicChatId = (a, b) => `${a}_${b}`;
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      let uId = await AsyncStorage.getItem("userId");
-      const nodeKey =
-        (await AsyncStorage.getItem("userNodeKey")) ||
-        (await AsyncStorage.getItem("studentNodeKey")) ||
-        (await AsyncStorage.getItem("studentId")) ||
-        null;
+  const getResolvedUserId = useCallback(async () => {
+    if (currentUserId) return currentUserId;
 
-      if (!uId && nodeKey) {
-        try {
-          const uVal = await getUserVal(nodeKey);
-          uId = uVal ? (uVal.userId || nodeKey) : nodeKey;
-        } catch {
-          uId = nodeKey;
-        }
-      }
+    let uId = await AsyncStorage.getItem("userId");
+    if (uId) return uId;
 
-      if (mounted) {
-        setCurrentUserId(uId || null);
-        setCurrentUserNodeKey(nodeKey || null);
-      }
-    })();
-    return () => { mounted = false; };
-  }, []);
+    const nodeKey =
+      (await AsyncStorage.getItem("userNodeKey")) ||
+      (await AsyncStorage.getItem("studentNodeKey")) ||
+      (await AsyncStorage.getItem("studentId")) ||
+      null;
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      if (!contactKey) return;
-      try {
-        const v = await getUserVal(contactKey);
-        if (v && mounted) {
-          if (v.userId) setContactUserId(v.userId);
-          setContactName((prev) => prev || v.name || v.username || "");
-          setContactImage((prev) => prev || v.profileImage || null);
-          const subtitle = (v.subject && String(v.subject).trim()) ? v.subject : (v.role || v.designation || "");
-          setContactSubtitle(subtitle || "");
-          return;
-        }
-      } catch {}
-      if (mounted) setContactSubtitle("");
-    })();
-    return () => { mounted = false; };
-  }, [contactKey]);
+    if (!nodeKey) return null;
 
-  async function findOrCreateChatId(userA, userB, createIfMissing = true) {
+    try {
+      const v = await getUserVal(nodeKey);
+      return v ? (v.userId || nodeKey) : nodeKey;
+    } catch {
+      return nodeKey;
+    }
+  }, [currentUserId]);
+
+  const findOrCreateChatId = useCallback(async (userA, userB, createIfMissing = true) => {
     if (!userA || !userB) return null;
+
     const c1 = makeDeterministicChatId(userA, userB);
     const c2 = makeDeterministicChatId(userB, userA);
+
     try {
       const s1 = await get(await getDbRef(`Chats/${c1}`));
       if (s1.exists()) return c1;
@@ -186,8 +161,15 @@ export default function ChatScreen(props) {
 
       const prefix = await getPathPrefix();
       const now = Date.now();
+
       const participants = { [userA]: true, [userB]: true };
-      const lastMessage = { seen: false, senderId: userA, text: "", timeStamp: now, type: "system" };
+      const lastMessage = {
+        seen: false,
+        senderId: userA,
+        text: "",
+        timeStamp: now,
+        type: "system",
+      };
       const unread = { [userA]: 0, [userB]: 0 };
 
       const updates = {};
@@ -201,103 +183,71 @@ export default function ChatScreen(props) {
       console.warn("[Chat] findOrCreateChatId error", err);
       return null;
     }
-  }
+  }, []);
 
   useEffect(() => {
     let mounted = true;
-    const attach = async () => {
-      if (!chatId) {
-        setMessages([]);
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      const msgsRef = await getDbRef(`Chats/${chatId}/messages`);
-      messagesRefRef.current = msgsRef;
 
-      onValue(msgsRef, (snap) => {
+    (async () => {
+      try {
+        let uId = await AsyncStorage.getItem("userId");
+        const nodeKey =
+          (await AsyncStorage.getItem("userNodeKey")) ||
+          (await AsyncStorage.getItem("studentNodeKey")) ||
+          (await AsyncStorage.getItem("studentId")) ||
+          null;
+
+        if (!uId && nodeKey) {
+          try {
+            const uVal = await getUserVal(nodeKey);
+            uId = uVal ? (uVal.userId || nodeKey) : nodeKey;
+          } catch {
+            uId = nodeKey;
+          }
+        }
+
+        const initialChatId = opened.chatId || routeChatId || "";
+        const initialContactUserId = opened.contactUserId || routeUserId || "";
+        const initialContactName = opened.contactName || routeContactName || "";
+        const initialContactImage = opened.contactImage || routeContactImage || null;
+
         if (!mounted) return;
-        const arr = [];
-        if (snap.exists()) {
-          snap.forEach((child) => {
-            const data = child.val() || {};
-            arr.push({ ...data, messageId: data.messageId || child.key });
-          });
-        }
-        arr.sort((a, b) => Number(a.timeStamp || 0) - Number(b.timeStamp || 0));
-        setMessages(arr);
-        setLoading(false);
 
-        if (currentUserId) {
-          (async () => {
-            try {
-              const prefix = await getPathPrefix();
-              await update(ref(database), { [`${prefix}Chats/${chatId}/unread/${currentUserId}`]: 0 });
+        setCurrentUserId(uId || null);
+        setCurrentUserNodeKey(nodeKey || null);
+        setChatId(initialChatId);
+        setContactUserId(initialContactUserId);
+        setContactName(initialContactName);
+        setContactImage(initialContactImage);
+        setBootstrapped(true);
 
-              const updates = {};
-              arr.forEach((m) => {
-                if (
-                  (String(m.receiverId) === String(currentUserId) || String(m.receiverId) === String(currentUserNodeKey)) &&
-                  !m.seen
-                ) {
-                  updates[`Chats/${chatId}/messages/${m.messageId}/seen`] = true;
-                }
-              });
-
-              if (Object.keys(updates).length) {
-                const full = {};
-                Object.keys(updates).forEach((k) => {
-                  full[`${prefix}${k}`] = true;
-                });
-                await update(ref(database), full);
-              }
-            } catch {}
-          })();
-        }
-      });
-    };
-
-    attach();
+        clearOpenedChat();
+      } catch (e) {
+        console.warn("[Chat] bootstrap error", e);
+        if (mounted) setBootstrapped(true);
+      }
+    })();
 
     return () => {
       mounted = false;
-      if (messagesRefRef.current) {
-        try { off(messagesRefRef.current); } catch {}
-      }
     };
-  }, [chatId, currentUserId, currentUserNodeKey]);
-
-  useEffect(() => {
-    if (!chatId) {
-      setLastMessageMeta(null);
-      return;
-    }
-    (async () => {
-      const lastRef = await getDbRef(`Chats/${chatId}/lastMessage`);
-      lastMessageRefRef.current = lastRef;
-      onValue(lastRef, (snap) => {
-        if (snap.exists()) setLastMessageMeta(snap.val());
-        else setLastMessageMeta(null);
-      });
-    })();
-    return () => {
-      try { if (lastMessageRefRef.current) off(lastMessageRefRef.current); } catch {}
-      lastMessageRefRef.current = null;
-    };
-  }, [chatId]);
-
-  useEffect(() => {
-    setTimeout(() => {
-      try { flatListRef.current?.scrollToEnd({ animated: true }); } catch {}
-    }, 120);
-  }, [messages]);
+  }, [
+    opened.chatId,
+    opened.contactUserId,
+    opened.contactName,
+    opened.contactImage,
+    routeChatId,
+    routeUserId,
+    routeContactName,
+    routeContactImage,
+  ]);
 
   useEffect(() => {
     const onShow = (e) => {
       setKeyboardVisible(true);
-      const h = e?.endCoordinates?.height || 300;
-      setKeyboardHeight(h);
+      setKeyboardHeight(e?.endCoordinates?.height || 300);
     };
+
     const onHide = () => {
       setKeyboardVisible(false);
       setKeyboardHeight(0);
@@ -315,23 +265,193 @@ export default function ChatScreen(props) {
     };
   }, []);
 
-  const getResolvedUserId = async () => {
-    if (currentUserId) return currentUserId;
-    let uId = await AsyncStorage.getItem("userId");
-    if (uId) return uId;
-    const nodeKey =
-      (await AsyncStorage.getItem("userNodeKey")) ||
-      (await AsyncStorage.getItem("studentNodeKey")) ||
-      (await AsyncStorage.getItem("studentId")) ||
-      null;
-    if (!nodeKey) return null;
-    try {
-      const v = await getUserVal(nodeKey);
-      return v ? (v.userId || nodeKey) : nodeKey;
-    } catch {
-      return nodeKey;
+  useEffect(() => {
+    let mounted = true;
+
+    const resolveContact = async () => {
+      if (!bootstrapped) return;
+      if (!currentUserId) return;
+
+      let resolvedContactUserId = contactUserId;
+
+      if (!resolvedContactUserId && chatId) {
+        try {
+          const chatSnap = await get(await getDbRef(`Chats/${chatId}`));
+          if (!mounted || !chatSnap.exists()) return;
+
+          const chatVal = chatSnap.val() || {};
+          const participants = chatVal.participants || {};
+
+          resolvedContactUserId =
+            Object.keys(participants).find((id) => String(id) !== String(currentUserId)) || "";
+
+          if (resolvedContactUserId && mounted) {
+            setContactUserId(resolvedContactUserId);
+          }
+        } catch (e) {
+          console.warn("[Chat] resolve participants error", e);
+        }
+      }
+
+      if (!resolvedContactUserId) {
+        if (mounted && !chatId) setLoading(false);
+        return;
+      }
+
+      try {
+        const userSnap = await get(await getDbRef(`Users/${resolvedContactUserId}`));
+        if (!mounted) return;
+
+        if (userSnap.exists()) {
+          const val = userSnap.val() || {};
+          setContactName((prev) => prev || val.name || val.username || "Conversation");
+          setContactImage((prev) => prev || val.profileImage || null);
+          setContactSubtitle(val.role || "");
+        }
+      } catch (e) {
+        console.warn("[Chat] load contact user error", e);
+      }
+    };
+
+    resolveContact();
+
+    return () => {
+      mounted = false;
+    };
+  }, [bootstrapped, currentUserId, chatId, contactUserId]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const prepareChat = async () => {
+      if (!bootstrapped) return;
+      if (!currentUserId) return;
+
+      if (chatId) return;
+      if (!contactUserId) return;
+
+      try {
+        const resolvedChatId = await findOrCreateChatId(currentUserId, contactUserId, true);
+        if (!resolvedChatId) {
+          if (mounted) {
+            setLoading(false);
+            Alert.alert("Chat error", "Could not find or create chat");
+          }
+          return;
+        }
+
+        if (mounted) setChatId(resolvedChatId);
+      } catch (e) {
+        console.warn("[Chat] prepareChat error", e);
+        if (mounted) setLoading(false);
+      }
+    };
+
+    prepareChat();
+
+    return () => {
+      mounted = false;
+    };
+  }, [bootstrapped, currentUserId, contactUserId, chatId, findOrCreateChatId]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const attach = async () => {
+      if (!bootstrapped) return;
+      if (!chatId) return;
+
+      setLoading(true);
+
+      const msgsRef = await getDbRef(`Chats/${chatId}/messages`);
+      messagesRefRef.current = msgsRef;
+
+      onValue(msgsRef, async (snap) => {
+        if (!mounted) return;
+
+        const arr = [];
+        if (snap.exists()) {
+          snap.forEach((childSnap) => {
+            const data = childSnap.val() || {};
+            arr.push({ ...data, messageId: data.messageId || childSnap.key });
+          });
+        }
+
+        arr.sort((a, b) => Number(a.timeStamp || 0) - Number(b.timeStamp || 0));
+        setMessages(arr);
+        setLoading(false);
+
+        if (currentUserId) {
+          try {
+            const prefix = await getPathPrefix();
+
+            await update(ref(database), {
+              [`${prefix}Chats/${chatId}/unread/${currentUserId}`]: 0,
+            });
+
+            const updates = {};
+            arr.forEach((m) => {
+              if (
+                (String(m.receiverId) === String(currentUserId) ||
+                  String(m.receiverId) === String(currentUserNodeKey)) &&
+                !m.seen
+              ) {
+                updates[`${prefix}Chats/${chatId}/messages/${m.messageId}/seen`] = true;
+              }
+            });
+
+            if (Object.keys(updates).length) {
+              await update(ref(database), updates);
+            }
+          } catch {}
+        }
+      });
+    };
+
+    attach();
+
+    return () => {
+      mounted = false;
+      if (messagesRefRef.current) {
+        try {
+          off(messagesRefRef.current);
+        } catch {}
+      }
+    };
+  }, [bootstrapped, chatId, currentUserId, currentUserNodeKey]);
+
+  useEffect(() => {
+    if (!bootstrapped || !chatId) {
+      setLastMessageMeta(null);
+      return;
     }
-  };
+
+    (async () => {
+      const lastRef = await getDbRef(`Chats/${chatId}/lastMessage`);
+      lastMessageRefRef.current = lastRef;
+      onValue(lastRef, (snap) => {
+        if (snap.exists()) setLastMessageMeta(snap.val());
+        else setLastMessageMeta(null);
+      });
+    })();
+
+    return () => {
+      try {
+        if (lastMessageRefRef.current) off(lastMessageRefRef.current);
+      } catch {}
+      lastMessageRefRef.current = null;
+    };
+  }, [bootstrapped, chatId]);
+
+  useEffect(() => {
+    if (!messages.length) return;
+    const t = setTimeout(() => {
+      try {
+        flatListRef.current?.scrollToEnd({ animated: true });
+      } catch {}
+    }, 120);
+    return () => clearTimeout(t);
+  }, [messages]);
 
   async function uriToBlob(uri) {
     return await new Promise((resolve, reject) => {
@@ -347,6 +467,24 @@ export default function ChatScreen(props) {
       }
     });
   }
+
+  const resolveReceiver = useCallback(async () => {
+    const cu = await getResolvedUserId();
+    if (!cu) return { senderId: null, receiverId: null };
+
+    let receiverId = contactUserId;
+
+    if (!receiverId && chatId) {
+      try {
+        const chatSnap = await get(await getDbRef(`Chats/${chatId}`));
+        const participants = chatSnap.exists() ? chatSnap.val()?.participants || {} : {};
+        receiverId = Object.keys(participants).find((id) => String(id) !== String(cu)) || "";
+        if (receiverId) setContactUserId(receiverId);
+      } catch {}
+    }
+
+    return { senderId: cu, receiverId };
+  }, [contactUserId, chatId, getResolvedUserId]);
 
   async function pickImageAndSend() {
     try {
@@ -368,15 +506,20 @@ export default function ChatScreen(props) {
       const localUri = result.uri ?? result.assets?.[0]?.uri;
       if (!localUri) return;
 
-      const cu = await getResolvedUserId();
-      if (!cu) {
-        Alert.alert("Missing user id", "Cannot determine current user id.");
+      const { senderId, receiverId } = await resolveReceiver();
+
+      if (!senderId) {
+        Alert.alert("Chat error", "Missing sender.");
+        return;
+      }
+      if (!receiverId) {
+        Alert.alert("Chat error", "Missing receiver.");
         return;
       }
 
       let chatKeyLocal = chatId;
       if (!chatKeyLocal) {
-        chatKeyLocal = await findOrCreateChatId(cu, contactUserId, true);
+        chatKeyLocal = await findOrCreateChatId(senderId, receiverId, true);
         if (!chatKeyLocal) {
           Alert.alert("Chat error", "Could not find or create chat");
           return;
@@ -387,25 +530,22 @@ export default function ChatScreen(props) {
       const messageId = push(await getDbRef(`Chats/${chatKeyLocal}/messages`)).key;
       const now = Date.now();
 
-      setMessages((prev) =>
-        prev.some((m) => m.messageId === messageId)
-          ? prev
-          : [
-              ...prev,
-              {
-                messageId,
-                senderId: cu,
-                receiverId: contactUserId,
-                text: "",
-                timeStamp: now,
-                type: "image",
-                imageUrl: localUri,
-                uploading: true,
-                edited: false,
-                deleted: false,
-              },
-            ]
-      );
+      setMessages((prev) => [
+        ...prev,
+        {
+          messageId,
+          senderId,
+          receiverId,
+          text: "",
+          timeStamp: now,
+          type: "image",
+          imageUrl: localUri,
+          uploading: true,
+          edited: false,
+          deleted: false,
+          seen: false,
+        },
+      ]);
 
       const blob = await uriToBlob(localUri);
       const path = `chatImages/${chatKeyLocal}/${messageId}.jpg`;
@@ -413,10 +553,11 @@ export default function ChatScreen(props) {
       await uploadBytes(storageReference, blob);
       const downloadUrl = await getDownloadURL(storageReference);
 
+      const prefix = await getPathPrefix();
       const messageObj = {
         messageId,
-        senderId: cu,
-        receiverId: contactUserId,
+        senderId,
+        receiverId,
         text: "",
         timeStamp: now,
         type: "image",
@@ -426,20 +567,17 @@ export default function ChatScreen(props) {
         deleted: false,
       };
 
-      const lastMessage = {
+      const updates = {};
+      updates[`${prefix}Chats/${chatKeyLocal}/messages/${messageId}`] = messageObj;
+      updates[`${prefix}Chats/${chatKeyLocal}/lastMessage`] = {
         seen: false,
-        senderId: cu,
+        senderId,
         text: "📷 Image",
         timeStamp: now,
         type: "image",
       };
-
-      const prefix = await getPathPrefix();
-      const updates = {};
-      updates[`${prefix}Chats/${chatKeyLocal}/messages/${messageId}`] = messageObj;
-      updates[`${prefix}Chats/${chatKeyLocal}/lastMessage`] = lastMessage;
-      updates[`${prefix}Chats/${chatKeyLocal}/unread/${contactUserId}`] = 1;
-      updates[`${prefix}Chats/${chatKeyLocal}/unread/${cu}`] = 0;
+      updates[`${prefix}Chats/${chatKeyLocal}/unread/${receiverId}`] = 1;
+      updates[`${prefix}Chats/${chatKeyLocal}/unread/${senderId}`] = 0;
 
       await update(ref(database), updates);
     } catch (err) {
@@ -450,17 +588,23 @@ export default function ChatScreen(props) {
 
   async function sendMessage() {
     if (!text.trim()) return;
+
     setSending(true);
     try {
-      const cu = await getResolvedUserId();
-      if (!cu) {
-        Alert.alert("Missing user id", "Cannot determine current user id.");
+      const { senderId, receiverId } = await resolveReceiver();
+
+      if (!senderId) {
+        Alert.alert("Chat error", "Missing sender.");
+        return;
+      }
+      if (!receiverId) {
+        Alert.alert("Chat error", "Missing receiver.");
         return;
       }
 
       let chatKeyLocal = chatId;
       if (!chatKeyLocal) {
-        chatKeyLocal = await findOrCreateChatId(cu, contactUserId, true);
+        chatKeyLocal = await findOrCreateChatId(senderId, receiverId, true);
         if (!chatKeyLocal) {
           Alert.alert("Chat error", "Could not find or create chat");
           return;
@@ -473,8 +617,8 @@ export default function ChatScreen(props) {
 
       const messageObj = {
         messageId,
-        senderId: cu,
-        receiverId: contactUserId,
+        senderId,
+        receiverId,
         text: text.trim(),
         timeStamp: now,
         type: "text",
@@ -483,43 +627,20 @@ export default function ChatScreen(props) {
         deleted: false,
       };
 
-      const chatSnap = await get(await getDbRef(`Chats/${chatKeyLocal}`));
-      let unreadObj = {};
-      if (chatSnap.exists()) unreadObj = chatSnap.child("unread").val() || {};
-
-      const unreadUpdates = {};
       const prefix = await getPathPrefix();
-
-      if (chatSnap.exists()) {
-        const parts = chatSnap.child("participants").val() || {};
-        Object.keys(parts).forEach((p) => {
-          if (p === cu) unreadUpdates[`${prefix}Chats/${chatKeyLocal}/unread/${p}`] = 0;
-          else {
-            const prev = typeof unreadObj[p] === "number" ? unreadObj[p] : 0;
-            unreadUpdates[`${prefix}Chats/${chatKeyLocal}/unread/${p}`] = prev + 1;
-          }
-        });
-      } else {
-        unreadUpdates[`${prefix}Chats/${chatKeyLocal}/unread/${contactUserId}`] = (unreadObj[contactUserId] || 0) + 1;
-        unreadUpdates[`${prefix}Chats/${chatKeyLocal}/unread/${cu}`] = 0;
-      }
-
-      const lastMessage = {
+      const updates = {};
+      updates[`${prefix}Chats/${chatKeyLocal}/messages/${messageId}`] = messageObj;
+      updates[`${prefix}Chats/${chatKeyLocal}/lastMessage`] = {
         seen: false,
-        senderId: cu,
+        senderId,
         text: text.trim(),
         timeStamp: now,
         type: "text",
       };
+      updates[`${prefix}Chats/${chatKeyLocal}/unread/${receiverId}`] = 1;
+      updates[`${prefix}Chats/${chatKeyLocal}/unread/${senderId}`] = 0;
 
-      const updates = {};
-      updates[`${prefix}Chats/${chatKeyLocal}/messages/${messageId}`] = messageObj;
-      updates[`${prefix}Chats/${chatKeyLocal}/lastMessage`] = lastMessage;
-      Object.assign(updates, unreadUpdates);
-
-      setMessages((prev) => (prev.some((m) => m.messageId === messageId) ? prev : [...prev, messageObj]));
       await update(ref(database), updates);
-
       setText("");
     } catch (err) {
       console.warn("[Chat:send] error", err);
@@ -529,7 +650,6 @@ export default function ChatScreen(props) {
     }
   }
 
-  // ---- Edit/Delete features (Telegram/Instagram rhythm) ----
   const openMessageActions = (m) => {
     const isMe =
       (currentUserId && String(m.senderId) === String(currentUserId)) ||
@@ -561,27 +681,14 @@ export default function ChatScreen(props) {
     }
     try {
       const prefix = await getPathPrefix();
-
       const updates = {};
       updates[`${prefix}Chats/${chatId}/messages/${activeMessage.messageId}/text`] = nextText;
       updates[`${prefix}Chats/${chatId}/messages/${activeMessage.messageId}/edited`] = true;
-
-      const isLast =
-        lastMessageMeta &&
-        Number(lastMessageMeta.timeStamp || 0) === Number(activeMessage.timeStamp || 0) &&
-        String(lastMessageMeta.senderId || "") === String(activeMessage.senderId || "");
-
-      if (isLast) {
-        updates[`${prefix}Chats/${chatId}/lastMessage/text`] = nextText;
-      }
-
       await update(ref(database), updates);
-
       setEditModalVisible(false);
       setEditDraft("");
       setActiveMessage(null);
-    } catch (e) {
-      console.warn("[Chat:edit] error", e);
+    } catch {
       Alert.alert("Error", "Failed to edit message.");
     }
   };
@@ -590,32 +697,34 @@ export default function ChatScreen(props) {
     if (!activeMessage?.messageId || !chatId) return;
     try {
       const prefix = await getPathPrefix();
-      const replacement = "Message deleted";
-
       const updates = {};
       updates[`${prefix}Chats/${chatId}/messages/${activeMessage.messageId}/deleted`] = true;
-      updates[`${prefix}Chats/${chatId}/messages/${activeMessage.messageId}/text`] = replacement;
-      updates[`${prefix}Chats/${chatId}/messages/${activeMessage.messageId}/edited`] = false;
-      updates[`${prefix}Chats/${chatId}/messages/${activeMessage.messageId}/imageUrl`] = null;
+      updates[`${prefix}Chats/${chatId}/messages/${activeMessage.messageId}/text`] = "Message deleted";
       updates[`${prefix}Chats/${chatId}/messages/${activeMessage.messageId}/type`] = "text";
-
-      const isLast =
-        lastMessageMeta &&
-        Number(lastMessageMeta.timeStamp || 0) === Number(activeMessage.timeStamp || 0) &&
-        String(lastMessageMeta.senderId || "") === String(activeMessage.senderId || "");
-
-      if (isLast) {
-        updates[`${prefix}Chats/${chatId}/lastMessage/text`] = replacement;
-        updates[`${prefix}Chats/${chatId}/lastMessage/type`] = "text";
-      }
-
       await update(ref(database), updates);
       closeMessageActions();
-    } catch (e) {
-      console.warn("[Chat:delete] error", e);
+    } catch {
       Alert.alert("Error", "Failed to delete message.");
     }
   };
+
+  const openContactProfile = useCallback(() => {
+    if (!contactUserId) {
+      Alert.alert("Unavailable", "User profile could not be opened.");
+      return;
+    }
+
+    router.push({
+      pathname: "/userProfile",
+      params: {
+        userId: contactUserId,
+        contactName: contactName || "",
+        contactImage: contactImage || "",
+        fromChat: "1",
+        chatId: chatId || "",
+      },
+    });
+  }, [router, contactUserId, contactName, contactImage, chatId]);
 
   function closeViewer() {
     setViewerVisible(false);
@@ -649,6 +758,7 @@ export default function ChatScreen(props) {
   const displayItems = useMemo(() => {
     const items = [];
     let lastDateLabel = null;
+
     messages.forEach((m) => {
       const label = dateLabelForTs(m.timeStamp);
       if (label !== lastDateLabel) {
@@ -657,6 +767,7 @@ export default function ChatScreen(props) {
       }
       items.push({ type: "message", ...m });
     });
+
     return items;
   }, [messages]);
 
@@ -668,8 +779,31 @@ export default function ChatScreen(props) {
     </View>
   );
 
+  const renderSeenIcon = (message, isMe) => {
+    if (!isMe) return null;
+
+    const isLastMessage =
+      lastMessageMeta &&
+      Number(lastMessageMeta.timeStamp || 0) === Number(message.timeStamp || 0) &&
+      String(lastMessageMeta.senderId || "") === String(message.senderId || "");
+
+    const seen = !!message.seen || (isLastMessage && !!lastMessageMeta?.seen);
+
+    return (
+      <Ionicons
+        name={seen ? "checkmark-done" : "checkmark"}
+        size={14}
+        color={seen ? "#CBE8FF" : "rgba(255,255,255,0.78)"}
+        style={{ marginLeft: 6 }}
+      />
+    );
+  };
+
   const renderMessage = ({ item, index }) => {
-    if (item.type === "date") return <View style={{ paddingVertical: 10 }}>{renderDateSeparator(item.label)}</View>;
+    if (item.type === "date") {
+      return <View style={{ paddingVertical: 10 }}>{renderDateSeparator(item.label)}</View>;
+    }
+
     const m = item;
     const isMe =
       (currentUserId && String(m.senderId) === String(currentUserId)) ||
@@ -679,19 +813,8 @@ export default function ChatScreen(props) {
     const prevSameSender = prev && prev.type === "message" && String(prev.senderId) === String(m.senderId);
     const showAvatar = !isMe && !prevSameSender;
 
-    const isLastMessage =
-      lastMessageMeta &&
-      m.messageId &&
-      lastMessageMeta.timeStamp &&
-      Number(lastMessageMeta.timeStamp) === Number(m.timeStamp);
-    const seenFlag = !!m.seen || (isLastMessage && !!lastMessageMeta?.seen);
-
     if (m.type === "image" && !m.deleted) {
-      const imageSource = m.imageUrl
-        ? { uri: m.imageUrl }
-        : m.imageUrlLocal
-        ? { uri: m.imageUrlLocal }
-        : AVATAR_PLACEHOLDER;
+      const imageSource = m.imageUrl ? { uri: m.imageUrl } : AVATAR_PLACEHOLDER;
 
       if (isMe) {
         return (
@@ -706,15 +829,12 @@ export default function ChatScreen(props) {
                 <Image source={imageSource} style={styles.outgoingImage} />
                 <View style={styles.imageMeta}>
                   <Text style={styles.imageTime}>{fmtTime12(m.timeStamp)}</Text>
-                  <Ionicons
-                    name={seenFlag ? "checkmark-done" : "checkmark"}
-                    size={14}
-                    color={seenFlag ? "#CBE8FF" : "rgba(255,255,255,0.75)"}
-                    style={{ marginLeft: 8 }}
-                  />
+                  {renderSeenIcon(m, true)}
                 </View>
               </TouchableOpacity>
-              <View style={styles.rightTailContainer}><View style={styles.rightTail} /></View>
+              <View style={styles.rightTailContainer}>
+                <View style={styles.rightTail} />
+              </View>
             </View>
             <View style={{ width: 36 }} />
           </View>
@@ -736,7 +856,9 @@ export default function ChatScreen(props) {
                 <Text style={styles.imageTimeIncoming}>{fmtTime12(m.timeStamp)}</Text>
               </View>
             </TouchableOpacity>
-            <View style={styles.leftTailContainer}><View style={styles.leftTail} /></View>
+            <View style={styles.leftTailContainer}>
+              <View style={styles.leftTail} />
+            </View>
           </View>
           <View style={{ flex: 1 }} />
         </View>
@@ -768,14 +890,7 @@ export default function ChatScreen(props) {
                 <Text style={[styles.bubbleTime, isMe ? styles.bubbleTimeRight : styles.bubbleTimeLeft]}>
                   {fmtTime12(m.timeStamp)}
                 </Text>
-                {isMe && (
-                  <Ionicons
-                    name={seenFlag ? "checkmark-done" : "checkmark"}
-                    size={14}
-                    color={seenFlag ? "#CBE8FF" : "rgba(255,255,255,0.75)"}
-                    style={{ marginLeft: 8 }}
-                  />
-                )}
+                {renderSeenIcon(m, isMe)}
               </View>
             </View>
           </TouchableOpacity>
@@ -806,11 +921,13 @@ export default function ChatScreen(props) {
           </TouchableOpacity>
 
           <View style={styles.headerCenter}>
-            <Text style={styles.headerName} numberOfLines={1}>{contactName || "Conversation"}</Text>
+            <Text style={styles.headerName} numberOfLines={1}>
+              {contactName || "Conversation"}
+            </Text>
             <Text style={styles.headerSub}>{contactSubtitle || ""}</Text>
           </View>
 
-          <TouchableOpacity style={styles.headerRight} onPress={() => Alert.alert("Contact", "Open contact profile")}>
+          <TouchableOpacity style={styles.headerRight} onPress={openContactProfile} activeOpacity={0.85}>
             <Image source={contactImage ? { uri: contactImage } : AVATAR_PLACEHOLDER} style={styles.headerAvatar} />
           </TouchableOpacity>
         </View>
@@ -825,13 +942,24 @@ export default function ChatScreen(props) {
               renderItem={renderMessage}
               keyExtractor={(it, idx) => (it.type === "date" ? it.id : it.messageId || `${it.timeStamp}-${idx}`)}
               showsVerticalScrollIndicator={false}
-              contentContainerStyle={{ paddingVertical: 12, paddingBottom: 12 + (keyboardVisible ? keyboardHeight : 0) }}
-              onContentSizeChange={() => flatListRef.current && flatListRef.current.scrollToEnd({ animated: true })}
+              contentContainerStyle={{
+                paddingVertical: 12,
+                paddingBottom: 12 + (keyboardVisible ? keyboardHeight : 0),
+              }}
+              onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
             />
           )}
         </View>
 
-        <View style={[styles.inputRow, { paddingBottom: Math.max(insets.bottom, 8), marginBottom: keyboardVisible ? keyboardHeight : 0 }]}>
+        <View
+          style={[
+            styles.inputRow,
+            {
+              paddingBottom: Math.max(insets.bottom, 8),
+              marginBottom: keyboardVisible ? keyboardHeight : 0,
+            },
+          ]}
+        >
           <TouchableOpacity onPress={pickImageAndSend} style={styles.attachmentBtn}>
             <Ionicons name="image-outline" size={22} color={MUTED} />
           </TouchableOpacity>
@@ -855,7 +983,6 @@ export default function ChatScreen(props) {
           </TouchableOpacity>
         </View>
 
-        {/* Message actions sheet */}
         <Modal visible={actionSheetVisible} transparent animationType="fade" onRequestClose={closeMessageActions}>
           <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={closeMessageActions}>
             <View style={styles.sheetContainer}>
@@ -879,7 +1006,6 @@ export default function ChatScreen(props) {
           </TouchableOpacity>
         </Modal>
 
-        {/* Edit modal */}
         <Modal visible={editModalVisible} transparent animationType="slide" onRequestClose={() => setEditModalVisible(false)}>
           <View style={styles.modalOverlayEdit}>
             <View style={styles.editCard}>
@@ -911,7 +1037,6 @@ export default function ChatScreen(props) {
           </View>
         </Modal>
 
-        {/* Fallback image viewer */}
         <Modal visible={viewerVisible && !viewerLibAvailable} transparent animationType="fade" onRequestClose={closeViewer}>
           <View style={styles.modalOverlay}>
             <TouchableOpacity style={styles.modalCloseBtn} onPress={closeViewer}>
@@ -964,11 +1089,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 14,
     borderRadius: 14,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
-    shadowRadius: 2,
-    elevation: 0,
   },
   bubbleLeft: {
     backgroundColor: INCOMING_BG,
@@ -999,7 +1119,15 @@ const styles = StyleSheet.create({
   editedLeft: { color: "#6B7280" },
   editedRight: { color: "rgba(255,255,255,0.86)" },
 
-  leftTailContainer: { position: "absolute", left: -6, bottom: -2, width: 12, height: 8, overflow: "hidden", alignItems: "flex-start" },
+  leftTailContainer: {
+    position: "absolute",
+    left: -6,
+    bottom: -2,
+    width: 12,
+    height: 8,
+    overflow: "hidden",
+    alignItems: "flex-start",
+  },
   leftTail: {
     width: 0,
     height: 0,
@@ -1012,7 +1140,15 @@ const styles = StyleSheet.create({
     transform: [{ rotate: "180deg" }],
   },
 
-  rightTailContainer: { position: "absolute", right: -20, bottom: -2, width: 12, height: 8, overflow: "hidden", alignItems: "flex-end" },
+  rightTailContainer: {
+    position: "absolute",
+    right: -20,
+    bottom: -2,
+    width: 12,
+    height: 8,
+    overflow: "hidden",
+    alignItems: "flex-end",
+  },
   rightTail: {
     width: 0,
     height: 0,
@@ -1022,13 +1158,37 @@ const styles = StyleSheet.create({
     borderLeftColor: "transparent",
     borderRightColor: "transparent",
     borderBottomColor: OUTGOING_BG,
-    transform: [{ rotate: "0deg" }],
   },
 
-  incomingImage: { width: 220, height: 140, borderRadius: 12, resizeMode: "cover", backgroundColor: "#eaeefb" },
-  outgoingImage: { width: 220, height: 140, borderRadius: 12, resizeMode: "cover", backgroundColor: "#005ecc", marginRight: -12 },
-  imageMeta: { position: "absolute", right: 8, bottom: 6, flexDirection: "row", alignItems: "center" },
-  incomingImageMeta: { position: "absolute", left: 8, bottom: 6, flexDirection: "row", alignItems: "center" },
+  incomingImage: {
+    width: 220,
+    height: 140,
+    borderRadius: 12,
+    resizeMode: "cover",
+    backgroundColor: "#eaeefb",
+  },
+  outgoingImage: {
+    width: 220,
+    height: 140,
+    borderRadius: 12,
+    resizeMode: "cover",
+    backgroundColor: "#005ecc",
+    marginRight: -12,
+  },
+  imageMeta: {
+    position: "absolute",
+    right: 8,
+    bottom: 6,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  incomingImageMeta: {
+    position: "absolute",
+    left: 8,
+    bottom: 6,
+    flexDirection: "row",
+    alignItems: "center",
+  },
   imageTime: { color: "rgba(255,255,255,0.9)", fontSize: 11 },
   imageTimeIncoming: { color: MUTED, fontSize: 11 },
 
@@ -1062,7 +1222,6 @@ const styles = StyleSheet.create({
   sendBtnActive: { backgroundColor: PRIMARY },
   sendBtnDisabled: { backgroundColor: "#F1F4FF" },
 
-  // Action sheet
   sheetOverlay: {
     flex: 1,
     backgroundColor: "rgba(15,23,42,0.35)",
@@ -1087,7 +1246,6 @@ const styles = StyleSheet.create({
   },
   sheetText: { fontSize: 15, fontWeight: "500", color: "#111827" },
 
-  // Edit modal
   modalOverlayEdit: {
     flex: 1,
     backgroundColor: "rgba(15,23,42,0.45)",
@@ -1149,9 +1307,19 @@ const styles = StyleSheet.create({
   editBtnCancelText: { color: "#475569", fontWeight: "700" },
   editBtnSaveText: { color: "#fff", fontWeight: "700" },
 
-  // Existing image viewer modal
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.95)", justifyContent: "center", alignItems: "center" },
-  modalContent: { flex: 1, justifyContent: "center", alignItems: "center", width: "100%", padding: 12 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.95)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalContent: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    width: "100%",
+    padding: 12,
+  },
   modalImage: { width: "100%", height: "100%" },
   modalCloseBtn: {
     position: "absolute",
@@ -1161,9 +1329,8 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: "rgba(0,0,0,0.3)",
     alignItems: "center",
-    justifyContent:
-      "center",
+    justifyContent: "center",
   },
 });
