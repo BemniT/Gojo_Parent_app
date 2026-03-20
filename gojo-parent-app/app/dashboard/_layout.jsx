@@ -50,7 +50,7 @@ export default function DashboardLayout() {
           const schoolSnap = await get(ref(database, `Platform1/Schools/${sk}/schoolInfo`));
           if (schoolSnap.exists()) {
             const info = schoolSnap.val() || {};
-            setSchoolName(info.shortName || info.name || "School");
+            setSchoolName( info.name || "School");
           } else {
             setSchoolName("School");
           }
@@ -262,10 +262,10 @@ export default function DashboardLayout() {
         <Tabs.Screen
           name="school"
           options={{
-            title: schoolName || "School",
+            title: "Parent Services",
             headerTitle: () => (
               <Text style={{ fontSize: 20, color: "#222", marginLeft: 8 }} numberOfLines={1} ellipsizeMode="tail">
-                {schoolName || "School"}
+                {schoolName || "Parent Services"}
               </Text>
             ),
             tabBarIcon: ({ color, size }) => (

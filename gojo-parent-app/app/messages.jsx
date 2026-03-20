@@ -26,7 +26,7 @@ const PRIMARY = "#007AFB";
 const MUTED = "#6B78A8";
 const AVATAR_PLACEHOLDER = require("../assets/images/avatar_placeholder.png");
 
-const FILTERS = ["Children" ,"Management", "Teachers"];
+const FILTERS = ["Children", "Management", "Teachers"];
 const debounceWindowMs = 15 * 1000;
 
 function shortText(s, n = 60) {
@@ -437,7 +437,6 @@ export default function MessagesScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Search appears only when icon clicked */}
         {showSearch && (
           <View style={styles.searchWrap}>
             <Ionicons name="search-outline" size={18} color={MUTED} style={{ marginRight: 8 }} />
@@ -457,7 +456,6 @@ export default function MessagesScreen() {
           </View>
         )}
 
-        {/* Equal-width 3 filters */}
         <View style={styles.filterContainer}>
           <View style={styles.filterRow}>
             {FILTERS.map((f) => (
@@ -494,20 +492,32 @@ export default function MessagesScreen() {
                 <TouchableOpacity style={styles.itemWrapper} onPress={() => onOpenChat(item)} activeOpacity={0.9}>
                   <View style={styles.row}>
                     <Image source={item.profileImage ? { uri: item.profileImage } : AVATAR_PLACEHOLDER} style={styles.avatar} />
-                    <View style={{ flex: 1, marginLeft: 12 }}>
+                    <View style={{ flex: 1, marginLeft: 12, minWidth: 0 }}>
                       <View style={styles.rowTop}>
-                        <View style={{ flex: 1, flexDirection: "row", alignItems: "center" }}>
+                        <View style={styles.leftTop}>
                           <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
-                          {item.role ? <View style={styles.badge}><Text style={styles.badgeText}>{item.role}</Text></View> : null}
+                          {item.role ? (
+                            <View style={styles.badge}>
+                              <Text style={styles.badgeText}>{item.role}</Text>
+                            </View>
+                          ) : null}
                         </View>
 
-                        <View style={{ alignItems: "flex-end", flexDirection: "row" }}>
-                          <Text style={styles.time}>{fmtTime12(item.lastTime)}</Text>
-                          <View style={{ width: 8 }} />
+                        <View style={styles.rightMeta}>
+                          <Text style={styles.time} numberOfLines={1}>{fmtTime12(item.lastTime)}</Text>
                           {lastWasMine ? (
-                            <Ionicons name={seenFlag ? "checkmark-done" : "checkmark"} size={16} color={seenFlag ? PRIMARY : MUTED} />
+                            <Ionicons
+                              name={seenFlag ? "checkmark-done" : "checkmark"}
+                              size={16}
+                              color={seenFlag ? PRIMARY : MUTED}
+                              style={{ marginLeft: 6 }}
+                            />
                           ) : null}
-                          {item.unread ? <View style={styles.unreadPill}><Text style={styles.unreadText}>{item.unread}</Text></View> : null}
+                          {item.unread ? (
+                            <View style={styles.unreadPill}>
+                              <Text style={styles.unreadText}>{item.unread}</Text>
+                            </View>
+                          ) : null}
                         </View>
                       </View>
 
@@ -556,7 +566,7 @@ const styles = StyleSheet.create({
   filterContainer: { paddingHorizontal: 16, marginBottom: 8 },
   filterRow: { flexDirection: "row", width: "100%", gap: 8 },
   filterPill: {
-    flex: 1, // equal space
+    flex: 1,
     height: 38,
     borderRadius: 12,
     backgroundColor: "#F8FAFF",
@@ -570,14 +580,55 @@ const styles = StyleSheet.create({
   itemWrapper: { paddingHorizontal: 0 },
   row: { flexDirection: "row", alignItems: "center", paddingVertical: 12, backgroundColor: "#fff" },
   avatar: { width: 56, height: 56, borderRadius: 28, backgroundColor: "#F1F3F8" },
+
   rowTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  name: { fontWeight: "700", fontSize: 16, color: "#111", marginRight: 8 },
-  badge: { marginLeft: -4, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 8, backgroundColor: "#F1F7FF" },
+
+  leftTop: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingRight: 8,
+  },
+
+  name: {
+    fontWeight: "700",
+    fontSize: 16,
+    color: "#111",
+    marginRight: 8,
+    flexShrink: 1,
+  },
+
+  badge: {
+    marginLeft: -4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: "#F1F7FF",
+    flexShrink: 0,
+  },
   badgeText: { color: PRIMARY, fontWeight: "700", fontSize: 11 },
   subtitleText: { color: MUTED, fontSize: 13, flex: 1 },
 
+  rightMeta: {
+    minWidth: 88,
+    flexShrink: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+  },
+
   time: { color: MUTED, fontSize: 11 },
-  unreadPill: { marginTop: 8, backgroundColor: PRIMARY, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12, minWidth: 24, alignItems: "center" },
+
+  unreadPill: {
+    marginLeft: 6,
+    backgroundColor: PRIMARY,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    minWidth: 24,
+    alignItems: "center",
+  },
   unreadText: { color: "#fff", fontWeight: "700", fontSize: 12 },
 
   separatorLine: { height: 1, backgroundColor: "#EEF4FF", marginLeft: 56 + 12 + 8, marginRight: 0 },
