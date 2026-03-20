@@ -583,7 +583,7 @@ const styles = StyleSheet.create({
   leftActions: { flexDirection: "row", alignItems: "center" },
   iconBtn: { padding: 6 },
   meta: { paddingHorizontal: 12, paddingBottom: 12 },
-  likesText: { fontWeight: "700", marginBottom: 6, color: "#111" },
+  likesText: { fontWeight: "700",marginTop: -10, marginBottom: 6, color: "#111" },
   messageText: { color: "#222", lineHeight: 20 },
   bottomMetaRow: { flexDirection: "row", marginTop: 8, alignItems: "center" },
   seenText: { color: "#888", fontSize: 12 },

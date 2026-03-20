@@ -264,13 +264,13 @@ export default function DashboardLayout() {
           options={{
             title: "Parent Services",
             headerTitle: () => (
-              <Text style={{ fontSize: 20, color: "#222", marginLeft: 8 }} numberOfLines={1} ellipsizeMode="tail">
+              <Text style={{ fontSize: 20,fontWeight: "bold", color: "#222", marginLeft: 8 }} numberOfLines={1} ellipsizeMode="tail">
                 {schoolName || "Parent Services"}
               </Text>
             ),
             tabBarIcon: ({ color, size }) => (
-              <FontAwesome6 name="building-columns" size={size * 0.86} color={color} />
-            ),
+              <FontAwesome6 name="building-columns" size={size } color={color} />
+            )
           }}
         />
       </Tabs>
