@@ -8,6 +8,7 @@ import {
   Dimensions,
   Image,
   Linking,
+  Modal,
   ScrollView,
   Share,
   StatusBar,
@@ -46,6 +47,18 @@ const PALETTE = {
 
 const defaultProfile = "https://cdn-icons-png.flaticon.com/512/847/847969.png";
 const WEEK_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+const WEEK_DAY_SHORT = {
+  Monday: "Mon",
+  Tuesday: "Tue",
+  Wednesday: "Wed",
+  Thursday: "Thu",
+  Friday: "Fri",
+};
+
+function getPeriodOrder(periodName) {
+  const match = String(periodName || "").match(/\d+/);
+  return match ? Number(match[0]) : Number.MAX_SAFE_INTEGER;
+}
 
 export default function UserProfile() {
   const router = useRouter();
@@ -71,6 +84,7 @@ export default function UserProfile() {
   const [studentWeeklySchedule, setStudentWeeklySchedule] = useState({});
   const [studentGradeSection, setStudentGradeSection] = useState(null);
   const [selectedScheduleDay, setSelectedScheduleDay] = useState(null);
+  const [scheduleSheetVisible, setScheduleSheetVisible] = useState(false);
 
   const [showMenu, setShowMenu] = useState(false);
 
@@ -143,15 +157,18 @@ export default function UserProfile() {
         }
 
         if (rId && detectedRole === "Student") {
-          const [studentSnap, teachersSnap, schedulesSnap] = await Promise.all([
+          // fetch student, teachers node, schedules and grade management
+          const [studentSnap, teachersSnap, schedulesSnap, gradesSnap] = await Promise.all([
             get(child(ref(database), `${schoolAwarePath("Students")}/${rId}`)),
             get(child(ref(database), schoolAwarePath("Teachers"))),
             get(child(ref(database), schoolAwarePath("Schedules"))),
+            get(child(ref(database), schoolAwarePath("GradeManagement/grades"))),
           ]);
 
           const student = studentSnap.exists() ? studentSnap.val() : null;
           const teachersData = teachersSnap.exists() ? teachersSnap.val() : {};
           const schedulesData = schedulesSnap.exists() ? schedulesSnap.val() : {};
+          const gradesData = gradesSnap.exists() ? gradesSnap.val() : {};
 
           if (student) {
             const grade = student?.grade;
@@ -159,6 +176,7 @@ export default function UserProfile() {
             const gradeSectionKey = `Grade ${grade}${section || ""}`;
             setStudentGradeSection({ grade, section, key: gradeSectionKey });
 
+            // Parents resolution (unchanged)
             let parentRows = [];
             const parentMap = student.parents || {};
             for (const pid of Object.keys(parentMap)) {
@@ -197,23 +215,97 @@ export default function UserProfile() {
               }, []);
             }
 
+            // Build teacher map from schedules (existing logic)
             const teacherMap = {};
 
-            const teacherIndexByName = {};
-            Object.keys(teachersData || {}).forEach((teacherId) => {
-              const teacherNode = teachersData[teacherId];
-              const teacherUser = usersData?.[teacherNode?.userId] || {};
-              const nm = String(teacherUser?.name || "").trim().toLowerCase();
-              if (nm) {
-                teacherIndexByName[nm] = {
-                  teacherId,
-                  userId: teacherNode?.userId || null,
-                  name: teacherUser?.name || "Teacher",
-                  profileImage: teacherUser?.profileImage || defaultProfile,
-                };
-              }
+            Object.keys(schedulesData || {}).forEach((day) => {
+              const dayNode = schedulesData?.[day]?.[gradeSectionKey] || {};
+              Object.values(dayNode).forEach((period) => {
+                if (!period?.teacherName || period.teacherName === "Unassigned") return;
+
+                // try match teacher by name in teachersData -> usersData
+                const teacherEntry =
+                  Object.values(teachersData).find((t) => {
+                    const userRow = usersData[t?.userId] || {};
+                    return (
+                      String(userRow?.name || "").trim().toLowerCase() ===
+                      String(period.teacherName || "").trim().toLowerCase()
+                    );
+                  }) || null;
+
+                const teacherId = teacherEntry?.teacherId || period.teacherName;
+                if (!teacherMap[teacherId]) {
+                  teacherMap[teacherId] = {
+                    teacherId: teacherEntry?.teacherId || null,
+                    userId: teacherEntry?.userId || null,
+                    name: period.teacherName || "Teacher",
+                    profileImage: teacherEntry?.userId
+                      ? usersData[teacherEntry.userId]?.profileImage || defaultProfile
+                      : defaultProfile,
+                    subjects: new Set(),
+                  };
+                }
+
+                if (period?.subject && period.subject !== "Free Period") {
+                  teacherMap[teacherId].subjects.add(period.subject);
+                }
+              });
             });
 
+            // --- NEW: merge GradeManagement assignments so assigned teachers show up ---
+            if (gradesData && grade) {
+              try {
+                const gradeNode = gradesData?.[grade] || {};
+                const sectionTeacherMap = gradeNode?.sectionSubjectTeachers || {};
+                const sectionAssignments = sectionTeacherMap?.[section] || {};
+
+                Object.keys(sectionAssignments || {}).forEach((subjectKey) => {
+                  const assignment = sectionAssignments[subjectKey] || {};
+                  const assignedTeacherId = assignment?.teacherId || null;
+                  const assignedSubject = assignment?.subject || subjectKey;
+
+                  if (!assignedTeacherId) return;
+
+                  // teachersData may be keyed by teacher record id. Find teacher node by key or by teacherId field
+                  let teacherNode = teachersData?.[assignedTeacherId] || null;
+                  if (!teacherNode) {
+                    // fallback: teachersData values might include teacherId field
+                    teacherNode =
+                      Object.values(teachersData || {}).find((t) => String(t?.teacherId) === String(assignedTeacherId)) ||
+                      null;
+                  }
+
+                  const mapKey = teacherNode?.teacherId || assignedTeacherId;
+                  const teacherUser = teacherNode ? usersData[teacherNode.userId] || {} : {};
+
+                  if (!teacherMap[mapKey]) {
+                    teacherMap[mapKey] = {
+                      teacherId: teacherNode?.teacherId || null,
+                      userId: teacherNode?.userId || null,
+                      name: teacherUser?.name || assignment?.teacherName || assignedTeacherId || "Teacher",
+                      profileImage: teacherUser?.profileImage || defaultProfile,
+                      subjects: new Set(),
+                    };
+                  }
+
+                  // add the assigned subject
+                  if (assignedSubject && assignedSubject !== "Free Period") {
+                    teacherMap[mapKey].subjects.add(assignedSubject);
+                  }
+                });
+              } catch (e) {
+                // non-fatal, continue with whatever teacherMap we have
+                console.warn("GradeManagement merge error", e);
+              }
+            }
+
+            // Convert teacherMap subjects sets -> arrays
+            const teacherRows = Object.values(teacherMap).map((t) => ({
+              ...t,
+              subjects: Array.from(t.subjects),
+            }));
+
+            // Build weekly schedule (unchanged)
             const weekly = {};
             WEEK_DAYS.forEach((day) => {
               const dayPeriods = schedulesData?.[day]?.[gradeSectionKey] || {};
@@ -224,35 +316,10 @@ export default function UserProfile() {
                   teacherName: info?.teacherName || "Unassigned",
                   isFree: (info?.subject || "Free Period") === "Free Period",
                 }))
-                .sort((a, b) => a.periodName.localeCompare(b.periodName));
+                .sort((a, b) => getPeriodOrder(a.periodName) - getPeriodOrder(b.periodName));
 
               weekly[day] = sorted;
-
-              sorted.forEach((period) => {
-                if (!period.teacherName || period.teacherName === "Unassigned") return;
-                if (period.subject === "Free Period") return;
-
-                const normalizedTeacherName = String(period.teacherName).trim().toLowerCase();
-                const teacherEntry = teacherIndexByName[normalizedTeacherName] || null;
-
-                const mapKey = teacherEntry?.teacherId || normalizedTeacherName;
-                if (!teacherMap[mapKey]) {
-                  teacherMap[mapKey] = {
-                    teacherId: teacherEntry?.teacherId || null,
-                    userId: teacherEntry?.userId || null,
-                    name: teacherEntry?.name || period.teacherName,
-                    profileImage: teacherEntry?.profileImage || defaultProfile,
-                    subjects: new Set(),
-                  };
-                }
-                teacherMap[mapKey].subjects.add(period.subject);
-              });
             });
-
-            const teacherRows = Object.values(teacherMap).map((t) => ({
-              ...t,
-              subjects: Array.from(t.subjects),
-            }));
 
             const todayName = new Date().toLocaleDateString("en-US", { weekday: "long" });
             const defaultDay = WEEK_DAYS.includes(todayName) ? todayName : "Monday";
@@ -325,6 +392,18 @@ export default function UserProfile() {
     return studentWeeklySchedule?.[selectedScheduleDay] || [];
   }, [selectedScheduleDay, studentWeeklySchedule]);
 
+  const selectedDaySummary = useMemo(() => {
+    const total = selectedDayPeriods.length;
+    const classCount = selectedDayPeriods.filter((period) => !period.isFree).length;
+    const freeCount = total - classCount;
+
+    return {
+      total,
+      classCount,
+      freeCount,
+    };
+  }, [selectedDayPeriods]);
+
   const headerHeight = scrollY.interpolate({
     inputRange: [0, HEADER_MAX_HEIGHT - HEADER_MIN_HEIGHT],
     outputRange: [HEADER_MAX_HEIGHT + insets.top, HEADER_MIN_HEIGHT + insets.top],
@@ -374,7 +453,7 @@ export default function UserProfile() {
       if (parentUserId && String(targetUserId) === String(parentUserId)) {
         return Alert.alert("Not allowed", "You cannot message yourself.");
       }
-          console.log("Opening chat with userId:", targetUserId);
+      console.log("Opening chat with userId:", targetUserId);
 
       router.push({ pathname: "/chat", params: { userId: targetUserId } });
     },
@@ -514,94 +593,60 @@ export default function UserProfile() {
               <View style={styles.card}>
                 <SectionHeader title="Periods" icon="calendar-outline" />
 
-                {studentGradeSection?.key ? (
-                  <Text style={styles.scheduleHeaderText}>{studentGradeSection.key}</Text>
-                ) : null}
+                <View style={styles.schedulePreviewCard}>
+                  <View style={styles.schedulePreviewHeader}>
+                    <View style={styles.schedulePreviewIconWrap}>
+                      <Ionicons name="calendar-clear-outline" size={18} color={PALETTE.accentDark} />
+                    </View>
+                    <View style={styles.schedulePreviewTextWrap}>
+                      <Text style={styles.schedulePreviewEyebrow}>Weekly learning flow</Text>
+                      <Text style={styles.schedulePreviewTitle}>
+                        {selectedScheduleDay || "Today"} schedule
+                      </Text>
+                      <Text style={styles.schedulePreviewSubtext}>
+                        {studentGradeSection?.key || "Class schedule"}
+                      </Text>
+                    </View>
+                  </View>
 
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.dayChipRow}
+                  {/* <View style={styles.schedulePreviewStatsRow}>
+                    <View style={styles.schedulePreviewStatPill}>
+                      <Text style={styles.schedulePreviewStatValue}>{selectedDaySummary.classCount}
+
+                        <Text style={styles.schedulePreviewStatLabel}> Classes</Text>
+                      </Text>
+                      
+                    </View>
+                    <View style={styles.schedulePreviewStatPill}>
+                      <Text style={styles.schedulePreviewStatValue}>{selectedDaySummary.freeCount}
+                        <Text style={styles.schedulePreviewStatLabel}> Free</Text>
+                      </Text>
+                      
+                    </View>
+                    <View style={styles.schedulePreviewStatPillWide}>
+                      <Text style={styles.schedulePreviewStatValue}>{selectedDaySummary.total}
+                        <Text style={styles.schedulePreviewStatLabel}> Total periods</Text>
+                      </Text>
+                      
+                    </View>
+                  </View> */}
+                </View>
+
+                <TouchableOpacity
+                  style={styles.scheduleOpenButton}
+                  activeOpacity={0.9}
+                  onPress={() => setScheduleSheetVisible(true)}
                 >
-                  {WEEK_DAYS.map((day) => {
-                    const active = selectedScheduleDay === day;
-                    const dayCount = studentWeeklySchedule?.[day]?.length || 0;
-                    return (
-                      <TouchableOpacity
-                        key={day}
-                        style={[styles.dayChip, active && styles.dayChipActive]}
-                        onPress={() => setSelectedScheduleDay(day)}
-                        activeOpacity={0.88}
-                      >
-                        <Text style={[styles.dayChipTitle, active && styles.dayChipTitleActive]}>
-                          {day}
-                        </Text>
-                        <Text style={[styles.dayChipSub, active && styles.dayChipSubActive]}>
-                          {dayCount} period{dayCount === 1 ? "" : "s"}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-
-                <View style={styles.selectedDayBanner}>
-                  <Ionicons name="time-outline" size={16} color={PALETTE.accentDark} />
-                  <Text style={styles.selectedDayBannerText}>
-                    {selectedScheduleDay || "Today"}'s periods
-                  </Text>
-                </View>
-
-                <View style={styles.periodsViewport}>
-                  <ScrollView
-                    nestedScrollEnabled
-                    showsVerticalScrollIndicator={selectedDayPeriods.length > 4}
-                    contentContainerStyle={styles.periodsViewportContent}
-                  >
-                    {selectedDayPeriods.length ? (
-                      selectedDayPeriods.map((p, index) => (
-                        <View
-                          key={`${selectedScheduleDay}-${p.periodName}`}
-                          style={[
-                            styles.periodCard,
-                            p.isFree && styles.periodCardFree,
-                            index === 0 && { marginTop: 0 },
-                          ]}
-                        >
-                          <View style={styles.periodTopRow}>
-                            <View style={[styles.periodBadge, p.isFree && styles.periodBadgeFree]}>
-                              <Text style={[styles.periodBadgeText, p.isFree && styles.periodBadgeTextFree]}>
-                                {p.periodName}
-                              </Text>
-                            </View>
-
-                            <View
-                              style={[
-                                styles.subjectMiniChip,
-                                p.isFree && styles.subjectMiniChipFree,
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.subjectMiniChipText,
-                                  p.isFree && styles.subjectMiniChipTextFree,
-                                ]}
-                              >
-                                {p.isFree ? "Free" : "Class"}
-                              </Text>
-                            </View>
-                          </View>
-
-                          <Text style={[styles.periodSubject, p.isFree && styles.periodSubjectFree]}>
-                            {p.subject}
-                          </Text>
-                          <Text style={styles.periodTeacher}>{p.teacherName}</Text>
-                        </View>
-                      ))
-                    ) : (
-                      <Text style={styles.emptyText}>No schedule found for this day.</Text>
-                    )}
-                  </ScrollView>
-                </View>
+                  <View>
+                    <Text style={styles.scheduleOpenButtonTitle}>Open full schedule</Text>
+                    <Text style={styles.scheduleOpenButtonSubtext}>
+                      View the day tabs and all periods in a bottom sheet.
+                    </Text>
+                  </View>
+                  {/* <View style={styles.scheduleOpenButtonIcon}>
+                    <Ionicons name="chevron-up" size={18} color={PALETTE.accentDark} />
+                  </View> */}
+                </TouchableOpacity>
               </View>
 
               {parents.length > 0 && (
@@ -733,6 +778,158 @@ export default function UserProfile() {
           </View>
         </Animated.View>
       </Animated.View>
+
+      <Modal
+        visible={scheduleSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setScheduleSheetVisible(false)}
+      >
+        <View style={styles.sheetOverlay}>
+          <TouchableOpacity style={styles.sheetBackdrop} activeOpacity={1} onPress={() => setScheduleSheetVisible(false)} />
+
+          <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 18) }]}> 
+            <View style={styles.sheetHandle} />
+
+            <View style={styles.sheetHeader}>
+              <View>
+                <Text style={styles.sheetTitle}>Student periods</Text>
+                <Text style={styles.sheetSubtitle}>{studentGradeSection?.key || "Class schedule"}</Text>
+              </View>
+
+              <TouchableOpacity style={styles.sheetCloseButton} onPress={() => setScheduleSheetVisible(false)}>
+                <Ionicons name="close" size={18} color={PALETTE.text} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.sheetScrollContent}>
+              <View style={styles.scheduleHeroCard}>
+                <View style={styles.scheduleHeroTextWrap}>
+                  <Text style={styles.scheduleEyebrow}>Weekly learning flow</Text>
+                  <Text style={styles.scheduleHeroTitle}>{selectedScheduleDay || "Today"} schedule</Text>
+                  <Text style={styles.scheduleHeroSubtext}>
+                    {selectedDaySummary.total} period{selectedDaySummary.total === 1 ? "" : "s"} planned
+                  </Text>
+                </View>
+
+                <View style={styles.scheduleHeroCountPill}>
+                  <Text style={styles.scheduleHeroCountNumber}>{selectedDaySummary.total}</Text>
+                  <Text style={styles.scheduleHeroCountLabel}>periods</Text>
+                </View>
+              </View>
+
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.dayChipRow}
+              >
+                {WEEK_DAYS.map((day) => {
+                  const active = selectedScheduleDay === day;
+                  const dayCount = studentWeeklySchedule?.[day]?.length || 0;
+                  return (
+                    <TouchableOpacity
+                      key={day}
+                      style={[styles.dayChip, active && styles.dayChipActive]}
+                      onPress={() => setSelectedScheduleDay(day)}
+                      activeOpacity={0.88}
+                    >
+                      <Text style={[styles.dayChipKicker, active && styles.dayChipKickerActive]}>
+                        {WEEK_DAY_SHORT[day]}
+                      </Text>
+                      <Text style={[styles.dayChipTitle, active && styles.dayChipTitleActive]}>{day}</Text>
+                      <Text style={[styles.dayChipSub, active && styles.dayChipSubActive]}>
+                        {dayCount} period{dayCount === 1 ? "" : "s"}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              <View style={styles.scheduleInsightsRow}>
+                <View style={styles.scheduleInsightCard}>
+                  <Text style={styles.scheduleInsightValue}>{selectedDaySummary.classCount}
+
+                    <Text style={styles.scheduleInsightLabel}> Classes</Text>
+                  </Text>
+                  
+                </View>
+                <View style={styles.scheduleInsightCard}>
+                  <Text style={styles.scheduleInsightValue}>{selectedDaySummary.freeCount}
+                    <Text style={styles.scheduleInsightLabel}> Free</Text>
+                  </Text>
+                  
+                </View>
+                {/* <View style={[styles.scheduleInsightCard, styles.scheduleInsightCardAccent]}>
+                  <Ionicons name="sparkles-outline" size={15} color={PALETTE.accentDark} />
+                  <Text style={styles.scheduleInsightHint}>Tap a day to focus on that plan</Text>
+                </View> */}
+              </View>
+
+              {selectedDayPeriods.length ? (
+                <View style={styles.periodTimeline}>
+                  {selectedDayPeriods.map((p, index) => (
+                    <View
+                      key={`${selectedScheduleDay}-${p.periodName}`}
+                      style={[
+                        styles.periodTimelineRow,
+                        p.isFree && styles.periodTimelineRowFree,
+                        index === selectedDayPeriods.length - 1 && styles.periodTimelineRowLast,
+                      ]}
+                    >
+                      <View style={styles.periodRailWrap}>
+                        <View style={[styles.periodRailDot, p.isFree && styles.periodRailDotFree]} />
+                        {index !== selectedDayPeriods.length - 1 && (
+                          <View style={[styles.periodRailLine, p.isFree && styles.periodRailLineFree]} />
+                        )}
+                      </View>
+
+                      <View style={[styles.periodCard, p.isFree && styles.periodCardFree]}>
+                        <View style={styles.periodTopRow}>
+                          <View>
+                            <Text style={styles.periodLabel}>{p.periodName}</Text>
+                            <Text style={[styles.periodSubject, p.isFree && styles.periodSubjectFree]}>
+                              {p.subject}
+                            </Text>
+                          </View>
+
+                          <View style={[styles.subjectMiniChip, p.isFree && styles.subjectMiniChipFree]}>
+                            <Text
+                              style={[
+                                styles.subjectMiniChipText,
+                                p.isFree && styles.subjectMiniChipTextFree,
+                              ]}
+                            >
+                              {p.isFree ? "Break" : "Class"}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.periodMetaRow}>
+                          <View style={styles.periodMetaPill}>
+                            <Ionicons
+                              name={p.isFree ? "cafe-outline" : "school-outline"}
+                              size={13}
+                              color={p.isFree ? PALETTE.muted : PALETTE.accentDark}
+                            />
+                            <Text style={styles.periodTeacher} numberOfLines={1}>
+                              {p.teacherName}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <View style={styles.scheduleEmptyState}>
+                  <Ionicons name="calendar-clear-outline" size={18} color={PALETTE.muted} />
+                  <Text style={styles.emptyText}>No schedule found for this day.</Text>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1100,11 +1297,181 @@ const styles = StyleSheet.create({
   subjectName: { fontSize: 14, color: PALETTE.text, fontWeight: "700" },
   subjectMeta: { fontSize: 12.5, color: PALETTE.muted, marginTop: 3 },
 
-  scheduleHeaderText: {
+  schedulePreviewCard: {
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: "#F7FBFF",
+    borderWidth: 1,
+    borderColor: "#D8EAFE",
+  },
+  schedulePreviewHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  schedulePreviewIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  schedulePreviewTextWrap: {
+    flex: 1,
+  },
+  schedulePreviewEyebrow: {
+    fontSize: 10.5,
+    fontWeight: "800",
+    color: PALETTE.accentDark,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  schedulePreviewTitle: {
+    marginTop: 5,
+    fontSize: 20,
+    fontWeight: "800",
+    color: PALETTE.text,
+  },
+  schedulePreviewSubtext: {
+    marginTop: 3,
+    fontSize: 12.5,
+    fontWeight: "600",
+    color: PALETTE.muted,
+  },
+  schedulePreviewStatsRow: {
+    marginTop: 16,
+    flexDirection: "row",
+    gap: 8,
+  },
+  schedulePreviewStatPill: {
+    flex: 1,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E3EEF9",
+  },
+  schedulePreviewStatPillWide: {
+    flex: 1.25,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E3EEF9",
+  },
+  schedulePreviewStatValue: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: PALETTE.text,
+  },
+  schedulePreviewStatLabel: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: "700",
+    color: PALETTE.muted,
+  },
+  scheduleOpenButton: {
+    marginTop: 12,
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: "#0F172A",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  scheduleOpenButtonTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#FFFFFF",
+  },
+  scheduleOpenButtonSubtext: {
+    marginTop: 3,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#CBD5E1",
+  },
+  scheduleOpenButtonIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#EAF5FF",
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 12,
+  },
+
+  scheduleHeroCard: {
+    marginBottom: 14,
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: "#F4F9FF",
+    borderWidth: 1,
+    borderColor: "#D8EAFE",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  scheduleHeroTextWrap: {
+    flex: 1,
+  },
+  scheduleEyebrow: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: PALETTE.accentDark,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  scheduleHeroTitle: {
+    marginTop: 6,
+    fontSize: 22,
+    fontWeight: "800",
+    color: PALETTE.text,
+  },
+  scheduleHeroSubtext: {
+    marginTop: 4,
     fontSize: 12.5,
     color: PALETTE.muted,
+    fontWeight: "600",
+  },
+  scheduleHeroCountPill: {
+    minWidth: 82,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 18,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#D8EAFE",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scheduleHeroCountNumber: {
+    fontSize: 24,
+    fontWeight: "800",
+    color: PALETTE.accentDark,
+  },
+  scheduleHeroCountLabel: {
+    marginTop: 2,
+    fontSize: 11,
     fontWeight: "700",
-    marginBottom: 10,
+    color: PALETTE.muted,
+    textTransform: "uppercase",
+  },
+
+  dayChipKicker: {
+    fontSize: 10.5,
+    color: PALETTE.muted,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.7,
+    marginBottom: 6,
+  },
+  dayChipKickerActive: {
+    color: PALETTE.accentDark,
   },
 
   dayChipRow: {
@@ -1114,16 +1481,21 @@ const styles = StyleSheet.create({
   },
   dayChip: {
     minWidth: 122,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: "#FBFDFF",
     borderWidth: 1,
     borderColor: PALETTE.border,
-    borderRadius: 14,
-    paddingVertical: 12,
+    borderRadius: 16,
+    paddingVertical: 13,
     paddingHorizontal: 14,
   },
   dayChipActive: {
     backgroundColor: "#EEF6FF",
-    borderColor: "#BFDBFE",
+    borderColor: "#B6D9FB",
+    shadowColor: "#93C5FD",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.14,
+    shadowRadius: 12,
+    elevation: 2,
   },
   dayChipTitle: {
     fontSize: 13,
@@ -1143,65 +1515,126 @@ const styles = StyleSheet.create({
     color: PALETTE.accentDark,
   },
 
-  selectedDayBanner: {
+  scheduleInsightsRow: {
     marginTop: 12,
-    marginBottom: 4,
+    marginBottom: 6,
     flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: PALETTE.accentSoft,
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-    alignSelf: "flex-start",
+    gap: 8,
   },
-  selectedDayBannerText: {
-    marginLeft: 6,
-    color: PALETTE.accentDark,
-    fontSize: 12,
+  scheduleInsightCard: {
+    flex: 1,
+    minHeight: 64,
+    borderRadius: 16,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    justifyContent: "center",
+  },
+  scheduleInsightCardAccent: {
+    flex: 1.4,
+    backgroundColor: "#F2F8FF",
+    borderColor: "#D8EAFE",
+    gap: 5,
+  },
+  scheduleInsightValue: {
+    fontSize: 21,
     fontWeight: "800",
+    color: PALETTE.text,
+  },
+  scheduleInsightLabel: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "700",
+    color: PALETTE.muted,
+  },
+  scheduleInsightHint: {
+    fontSize: 11.5,
+    fontWeight: "700",
+    color: PALETTE.accentDark,
+    lineHeight: 16,
+  },
+
+  periodTimeline: {
+    marginTop: 8,
+  },
+  periodTimelineRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    minHeight: 96,
+  },
+  periodTimelineRowFree: {
+    opacity: 0.92,
+  },
+  periodTimelineRowLast: {
+    minHeight: 88,
+  },
+  periodRailWrap: {
+    width: 26,
+    alignItems: "center",
+  },
+  periodRailDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginTop: 22,
+    backgroundColor: PALETTE.accent,
+    borderWidth: 3,
+    borderColor: "#DCEEFF",
+  },
+  periodRailDotFree: {
+    backgroundColor: "#94A3B8",
+    borderColor: "#E2E8F0",
+  },
+  periodRailLine: {
+    flex: 1,
+    width: 2,
+    marginTop: 6,
+    marginBottom: -2,
+    backgroundColor: "#D7EAFE",
+    borderRadius: 999,
+  },
+  periodRailLineFree: {
+    backgroundColor: "#E2E8F0",
   },
 
   periodCard: {
-    marginTop: 10,
-    padding: 13,
-    borderRadius: 14,
+    flex: 1,
+    marginBottom: 12,
+    padding: 14,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: PALETTE.border,
-    backgroundColor: "#FAFCFF",
+    backgroundColor: "#FFFFFF",
+    shadowColor: "rgba(15,23,42,0.04)",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 2,
   },
   periodCardFree: {
     backgroundColor: "#F8FAFC",
+    shadowOpacity: 0.03,
   },
   periodTopRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "flex-start",
+    gap: 10,
   },
-  periodBadge: {
-    backgroundColor: "#EEF4FF",
-    borderWidth: 1,
-    borderColor: "#BFDBFE",
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  periodBadgeFree: {
-    backgroundColor: "#F1F5F9",
-    borderColor: "#E2E8F0",
-  },
-  periodBadgeText: {
-    color: "#1E3A8A",
+  periodLabel: {
     fontSize: 11,
     fontWeight: "800",
-  },
-  periodBadgeTextFree: {
-    color: "#64748B",
+    color: PALETTE.accentDark,
+    textTransform: "uppercase",
+    letterSpacing: 0.7,
   },
   subjectMiniChip: {
     backgroundColor: "#DBEAFE",
     borderRadius: 999,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
   subjectMiniChipFree: {
     backgroundColor: "#E2E8F0",
@@ -1215,26 +1648,55 @@ const styles = StyleSheet.create({
     color: "#64748B",
   },
   periodSubject: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: 6,
+    fontSize: 17,
     color: PALETTE.text,
     fontWeight: "800",
+    lineHeight: 22,
   },
   periodSubjectFree: {
     color: "#64748B",
   },
+  periodMetaRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  periodMetaPill: {
+    maxWidth: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#F3F8FD",
+  },
   periodTeacher: {
-    marginTop: 4,
     fontSize: 12.5,
     color: PALETTE.muted,
     fontWeight: "600",
+    flexShrink: 1,
   },
 
+  scheduleEmptyState: {
+    marginTop: 10,
+    paddingVertical: 18,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+    backgroundColor: "#F8FAFC",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
   emptyText: {
     fontSize: 13,
     color: PALETTE.muted,
     fontWeight: "600",
-    marginTop: 8,
+    flex: 1,
   },
 
   dropdownMenu: {
@@ -1268,5 +1730,60 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: PALETTE.text,
     fontWeight: "600",
+  },
+
+  sheetOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(15, 23, 42, 0.38)",
+  },
+  sheetBackdrop: {
+    flex: 1,
+  },
+  sheetContainer: {
+    maxHeight: "84%",
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingTop: 10,
+    paddingHorizontal: 14,
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 52,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "#D6E2EE",
+    marginBottom: 12,
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 14,
+  },
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: PALETTE.text,
+  },
+  sheetSubtitle: {
+    marginTop: 3,
+    fontSize: 12.5,
+    fontWeight: "600",
+    color: PALETTE.muted,
+  },
+  sheetCloseButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sheetScrollContent: {
+    paddingBottom: 8,
   },
 });

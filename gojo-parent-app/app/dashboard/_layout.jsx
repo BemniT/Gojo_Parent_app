@@ -2,14 +2,17 @@ import { Ionicons, FontAwesome6 } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Tabs, useRouter } from "expo-router";
 import { ref, onValue, off, get } from "firebase/database";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { Image, Text, TouchableOpacity, View, StyleSheet, Animated } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { database } from "../../constants/firebaseConfig";
 
+const DEFAULT_AVATAR = "https://cdn-icons-png.flaticon.com/512/847/847969.png";
+
 export default function DashboardLayout() {
   const router = useRouter();
+
   const [schoolName, setSchoolName] = useState("");
   const [schoolKey, setSchoolKey] = useState(null);
 
@@ -20,37 +23,90 @@ export default function DashboardLayout() {
 
   const shimmerAnim = useRef(new Animated.Value(0)).current;
 
-  const parentListenerRef = useRef(null);
-  const userListenerRef = useRef(null);
-  const chatsListenerRef = useRef(null);
+  const parentRefRef = useRef(null);
+  const parentCallbackRef = useRef(null);
 
-  const schoolAwarePath = (subPath) => {
-    if (schoolKey) return `Platform1/Schools/${schoolKey}/${subPath}`;
-    return subPath; // fallback
-  };
+  const userRefRef = useRef(null);
+  const userCallbackRef = useRef(null);
+
+  const chatsRefRef = useRef(null);
+  const chatsCallbackRef = useRef(null);
+
+  const schoolAwarePath = useCallback(
+    (subPath, key = schoolKey) => {
+      if (key) return `Platform1/Schools/${key}/${subPath}`;
+      return subPath;
+    },
+    [schoolKey]
+  );
+
+  const cleanupParentListener = useCallback(() => {
+    if (parentRefRef.current && parentCallbackRef.current) {
+      try {
+        off(parentRefRef.current, "value", parentCallbackRef.current);
+      } catch {}
+    }
+    parentRefRef.current = null;
+    parentCallbackRef.current = null;
+  }, []);
+
+  const cleanupUserListener = useCallback(() => {
+    if (userRefRef.current && userCallbackRef.current) {
+      try {
+        off(userRefRef.current, "value", userCallbackRef.current);
+      } catch {}
+    }
+    userRefRef.current = null;
+    userCallbackRef.current = null;
+  }, []);
+
+  const cleanupChatsListener = useCallback(() => {
+    if (chatsRefRef.current && chatsCallbackRef.current) {
+      try {
+        off(chatsRefRef.current, "value", chatsCallbackRef.current);
+      } catch {}
+    }
+    chatsRefRef.current = null;
+    chatsCallbackRef.current = null;
+  }, []);
 
   useEffect(() => {
     const shimmer = Animated.loop(
       Animated.sequence([
-        Animated.timing(shimmerAnim, { toValue: 1, duration: 1000, useNativeDriver: true }),
-        Animated.timing(shimmerAnim, { toValue: 0, duration: 1000, useNativeDriver: true }),
+        Animated.timing(shimmerAnim, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(shimmerAnim, {
+          toValue: 0,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
       ])
     );
+
     shimmer.start();
     return () => shimmer.stop();
   }, [shimmerAnim]);
 
   useEffect(() => {
+    let mounted = true;
+
     (async () => {
       try {
         const sk = await AsyncStorage.getItem("schoolKey");
+        if (!mounted) return;
+
         setSchoolKey(sk || null);
 
         if (sk) {
           const schoolSnap = await get(ref(database, `Platform1/Schools/${sk}/schoolInfo`));
+          if (!mounted) return;
+
           if (schoolSnap.exists()) {
             const info = schoolSnap.val() || {};
-            setSchoolName( info.name || "School");
+            setSchoolName(info.name || "School");
           } else {
             setSchoolName("School");
           }
@@ -58,57 +114,87 @@ export default function DashboardLayout() {
           setSchoolName("School");
         }
       } catch {
-        setSchoolName("School");
+        if (mounted) setSchoolName("School");
       }
     })();
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
-    let parentListener;
-    let userListener;
+    let mounted = true;
 
     const fetchParentProfileImage = async () => {
       try {
         const parentNodeKey = await AsyncStorage.getItem("parentId");
+
         if (!parentNodeKey) {
-          setLoading(false);
+          if (mounted) {
+            setProfileImage(DEFAULT_AVATAR);
+            setLoading(false);
+          }
           return;
         }
 
         const parentRefPath = schoolAwarePath(`Parents/${parentNodeKey}`);
-        parentListener = onValue(ref(database, parentRefPath), (parentSnap) => {
-          if (!parentSnap.exists()) return;
-          const parentData = parentSnap.val() || {};
-          const actualUserId = parentData.userId;
-          setParentUserId(actualUserId);
+        const parentDbRef = ref(database, parentRefPath);
 
-          if (!actualUserId) {
+        cleanupParentListener();
+        cleanupUserListener();
+
+        const parentCallback = (parentSnap) => {
+          if (!mounted) return;
+
+          if (!parentSnap.exists()) {
+            setProfileImage(DEFAULT_AVATAR);
             setLoading(false);
             return;
           }
 
-          if (userListener) {
-            const oldPath = schoolAwarePath(`Users/${actualUserId}`);
-            off(ref(database, oldPath), "value", userListener);
+          const parentData = parentSnap.val() || {};
+          const actualUserId = parentData.userId || null;
+          setParentUserId(actualUserId);
+
+          if (!actualUserId) {
+            setProfileImage(DEFAULT_AVATAR);
+            setLoading(false);
+            cleanupUserListener();
+            return;
           }
 
           const userRefPath = schoolAwarePath(`Users/${actualUserId}`);
-          userListener = onValue(ref(database, userRefPath), (userSnap) => {
+          const userDbRef = ref(database, userRefPath);
+
+          cleanupUserListener();
+
+          const userCallback = (userSnap) => {
+            if (!mounted) return;
+
             if (userSnap.exists()) {
               const user = userSnap.val() || {};
-              setProfileImage(user.profileImage || "https://cdn-icons-png.flaticon.com/512/847/847969.png");
+              setProfileImage(user.profileImage || DEFAULT_AVATAR);
             } else {
-              setProfileImage("https://cdn-icons-png.flaticon.com/512/847/847969.png");
+              setProfileImage(DEFAULT_AVATAR);
             }
-            setLoading(false);
-          });
 
-          parentListenerRef.current = () => off(ref(database, parentRefPath), "value", parentListener);
-          userListenerRef.current = () => off(ref(database, userRefPath), "value", userListener);
-        });
+            setLoading(false);
+          };
+
+          userRefRef.current = userDbRef;
+          userCallbackRef.current = userCallback;
+          onValue(userDbRef, userCallback);
+        };
+
+        parentRefRef.current = parentDbRef;
+        parentCallbackRef.current = parentCallback;
+        onValue(parentDbRef, parentCallback);
       } catch {
-        setProfileImage("https://cdn-icons-png.flaticon.com/512/847/847969.png");
-        setLoading(false);
+        if (mounted) {
+          setProfileImage(DEFAULT_AVATAR);
+          setLoading(false);
+        }
       }
     };
 
@@ -117,23 +203,25 @@ export default function DashboardLayout() {
     }
 
     return () => {
-      if (parentListenerRef.current) parentListenerRef.current();
-      if (userListenerRef.current) userListenerRef.current();
-      if (chatsListenerRef.current) chatsListenerRef.current();
+      mounted = false;
+      cleanupParentListener();
+      cleanupUserListener();
     };
-  }, [schoolKey]);
+  }, [schoolKey, schoolAwarePath, cleanupParentListener, cleanupUserListener]);
 
-  // ✅ migrated unread badge listener to new db
   useEffect(() => {
     if (!parentUserId) {
       setTotalUnread(0);
+      cleanupChatsListener();
       return;
     }
 
     const chatsRefPath = schoolAwarePath("Chats");
-    const chatsRef = ref(database, chatsRefPath);
+    const chatsDbRef = ref(database, chatsRefPath);
 
-    const chatsListener = onValue(chatsRef, (snap) => {
+    cleanupChatsListener();
+
+    const chatsCallback = (snap) => {
       if (!snap.exists()) {
         setTotalUnread(0);
         return;
@@ -147,26 +235,39 @@ export default function DashboardLayout() {
           if (typeof val === "number") total += val;
         }
       });
-      setTotalUnread(total);
-    });
 
-    chatsListenerRef.current = () => off(chatsRef, "value", chatsListener);
+      setTotalUnread(total);
+    };
+
+    chatsRefRef.current = chatsDbRef;
+    chatsCallbackRef.current = chatsCallback;
+    onValue(chatsDbRef, chatsCallback);
 
     return () => {
-      if (chatsListenerRef.current) chatsListenerRef.current();
+      cleanupChatsListener();
     };
-  }, [parentUserId, schoolKey]);
+  }, [parentUserId, schoolAwarePath, cleanupChatsListener]);
+
+  useEffect(() => {
+    return () => {
+      cleanupParentListener();
+      cleanupUserListener();
+      cleanupChatsListener();
+    };
+  }, [cleanupParentListener, cleanupUserListener, cleanupChatsListener]);
+
+  const skeletonOpacity = shimmerAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.3, 0.7],
+  });
 
   const ProfileSkeleton = () => (
     <Animated.View
       style={[
-        { width: 40, height: 40, borderRadius: 20 },
         styles.skeleton,
+        styles.profileSkeleton,
         {
-          opacity: shimmerAnim.interpolate({
-            inputRange: [0, 1],
-            outputRange: [0.3, 0.7],
-          }),
+          opacity: skeletonOpacity,
         },
       ]}
     />
@@ -176,13 +277,10 @@ export default function DashboardLayout() {
     <View style={styles.messageContainer}>
       <Animated.View
         style={[
-          { width: 24, height: 24, borderRadius: 4 },
           styles.skeleton,
+          styles.messageSkeleton,
           {
-            opacity: shimmerAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0.3, 0.7],
-            }),
+            opacity: skeletonOpacity,
           },
         ]}
       />
@@ -190,52 +288,68 @@ export default function DashboardLayout() {
   );
 
   return (
-    <SafeAreaView style={{ flex: 1 }} edges={["bottom"]}>
-      <StatusBar style="light" backgroundColor="#000" />
+    <SafeAreaView style={styles.safeArea} edges={["bottom"]}>
+      <StatusBar style="dark" backgroundColor="#ffffff" translucent={false} />
+
       <Tabs
         screenOptions={{
           headerShown: true,
-          headerStyle: { backgroundColor: "#fff", shadowColor: "transparent", borderBottomWidth: 0 },
+          headerStyle: {
+            backgroundColor: "#fff",
+            shadowColor: "transparent",
+            borderBottomWidth: 0,
+          },
           headerTitleAlign: "left",
           tabBarActiveTintColor: "#1e90ff",
           tabBarInactiveTintColor: "gray",
-          tabBarStyle: { height: 56, paddingBottom: 6, backgroundColor: "#fff" },
-          tabBarItemStyle: { flex: 1, justifyContent: "center" },
-          tabBarLabelStyle: { display: "none" },
+          tabBarStyle: {
+            height: 56,
+            paddingBottom: 6,
+            backgroundColor: "#fff",
+          },
+          tabBarItemStyle: {
+            flex: 1,
+            justifyContent: "center",
+          },
+          tabBarLabelStyle: {
+            display: "none",
+          },
         }}
       >
         <Tabs.Screen
           name="home"
           options={{
             title: "Home",
-            headerLeft: () => (
-              <TouchableOpacity style={{ marginLeft: 15 }} onPress={() => router.push("/profile")}>
-                {loading ? (
-                  <ProfileSkeleton />
-                ) : (
-                  <Image
-                    source={{ uri: profileImage || "https://cdn-icons-png.flaticon.com/512/847/847969.png" }}
-                    style={{ width: 40, height: 40, borderRadius: 20 }}
-                  />
-                )}
-              </TouchableOpacity>
-            ),
-            headerTitle: () => <Text style={styles.instagramTitle}>Gojo Study</Text>,
+            headerLeft: () => null,
+            headerTitle: () => <Text style={styles.brandTitle}>Gojo Study</Text>,
             headerRight: () => (
-              <TouchableOpacity style={{ marginRight: 15 }} onPress={() => router.push("/messages")}>
-                {loading ? (
-                  <MessageIconSkeleton />
-                ) : (
-                  <View style={styles.messageContainer}>
-                    <Ionicons name="paper-plane-outline" size={24} color="#000" />
-                    {totalUnread > 0 && (
-                      <View style={styles.unreadBadge}>
-                        <Text style={styles.unreadText}>{totalUnread > 99 ? "99+" : totalUnread}</Text>
-                      </View>
-                    )}
-                  </View>
-                )}
-              </TouchableOpacity>
+              <View style={styles.headerRightGroup}>
+                <TouchableOpacity style={styles.headerRightButton} onPress={() => router.push("/messages")}>
+                  {loading ? (
+                    <MessageIconSkeleton />
+                  ) : (
+                    <View style={styles.messageContainer}>
+                      <Ionicons name="paper-plane-outline" size={24} color="#000" />
+                      {totalUnread > 0 && (
+                        <View style={styles.unreadBadge}>
+                          <Text style={styles.unreadText}>{totalUnread > 99 ? "99+" : totalUnread}</Text>
+                        </View>
+                      )}
+                    </View>
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.profileRightButton} onPress={() => router.push("/profile")}>
+                  {loading ? (
+                    <ProfileSkeleton />
+                  ) : (
+                    <Image
+                      source={{ uri: profileImage || DEFAULT_AVATAR }}
+                      style={styles.profileImage}
+                    />
+                  )}
+                </TouchableOpacity>
+              </View>
             ),
             tabBarIcon: ({ color, size }) => <Ionicons name="home-outline" size={size} color={color} />,
           }}
@@ -256,30 +370,54 @@ export default function DashboardLayout() {
             tabBarIcon: ({ color, size }) => <Ionicons name="calendar-outline" size={size} color={color} />,
           }}
         />
-<Tabs.Screen name="school/payments" options={{ href: null }} />
-<Tabs.Screen name="school/history" options={{ href: null }} />
-<Tabs.Screen name="school/calendar" options={{ href: null }} />
+
+        <Tabs.Screen name="school/payments" options={{ href: null }} />
+        <Tabs.Screen name="school/history" options={{ href: null }} />
+        <Tabs.Screen name="school/calendar" options={{ href: null }} />
+
         <Tabs.Screen
           name="school"
           options={{
             title: "Parent Services",
             headerTitle: () => (
-              <Text style={{ fontSize: 20,fontWeight: "bold", color: "#222", marginLeft: 8 }} numberOfLines={1} ellipsizeMode="tail">
+              <Text style={styles.schoolTitle} numberOfLines={1} ellipsizeMode="tail">
                 {schoolName || "Parent Services"}
               </Text>
             ),
             tabBarIcon: ({ color, size }) => (
-              <FontAwesome6 name="building-columns" size={size } color={color} />
-            )
+              <FontAwesome6 name="building-columns" size={size} color={color} />
+            ),
           }}
         />
       </Tabs>
-      
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#fff",
+  },
+
+  headerRightGroup: {
+    marginRight: 15,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  headerRightButton: {
+    marginRight: 0,
+  },
+  profileRightButton: {
+    marginLeft: 10,
+  },
+
+  profileImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+
   unreadBadge: {
     position: "absolute",
     right: -2,
@@ -292,15 +430,42 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 4,
   },
-  unreadText: { color: "#fff", fontSize: 10, fontWeight: "bold" },
-  skeleton: { backgroundColor: "#e1e1e1" },
-  instagramTitle: {
+  unreadText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "bold",
+  },
+
+  skeleton: {
+    backgroundColor: "#e1e1e1",
+  },
+  profileSkeleton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+  messageSkeleton: {
+    width: 24,
+    height: 24,
+    borderRadius: 4,
+  },
+
+  brandTitle: {
     fontSize: 24,
     fontWeight: "bold",
     fontFamily: "System",
     letterSpacing: -0.5,
     marginLeft: 10,
+    color: "#111",
   },
+
+  schoolTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#222",
+    marginLeft: 8,
+  },
+
   messageContainer: {
     width: 32,
     height: 32,
